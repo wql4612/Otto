@@ -1,6 +1,12 @@
 // ============================================================
-// ESP32 WebServer + WebSocket 服务端模块
-// 负责人: 组员A+C 集成
+// ESP32 WebServer + WebSocket 服务端模块（已废弃 / DEPRECATED）
+//
+// 此模块的功能已整合到 AI_Desktop_Assistant/main/wifi_driver.cpp。
+// 新代码请使用 wifi_driver 模块的 API:
+//   wifi_init() / wifi_handle_client() / ws_broadcast() 等。
+//
+// 本文件保留作为参考实现。
+// 负责人: 组员A+C 集成（原）
 // 依赖: WiFi.h, WebServer.h, LittleFS.h, esp_camera.h
 // ============================================================
 
