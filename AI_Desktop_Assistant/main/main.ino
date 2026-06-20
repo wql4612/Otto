@@ -4,7 +4,7 @@
  *       + 帧差法运动检测 / 语音识别占位 / 指令映射
  *
  * 引脚配置 (Seeed XIAO ESP32S3 Sense):
- *   LCD:      SCLK=2  MOSI=3  DC=4  CS=5  RST=6  BL=7
+ *   LCD:      SCLK=7  MOSI=9  DC=3  CS=2
  *   I2S 功放: BCLK=6  LRCLK=5  DOUT=1
  *   PDM 麦克: CLK=42  DIN=41 (板载)
  *   SG90舵机: GPIO21   MG996R舵机: GPIO44
@@ -87,7 +87,7 @@ void set_last_result(const String& text) {
     Serial.println(text);
 }
 
-void play_tone(int freq, int duration_ms, int amplitude = 16000) {
+void play_tone(int freq, int duration_ms, int amplitude) {
     speaker_play_tone(freq, duration_ms, amplitude, SAMPLE_RATE);
 }
 

@@ -1,5 +1,7 @@
 #include "wifi_driver.h"
 #include "esp_camera.h"
+#include <mbedtls/sha1.h>
+#include <base64.h>
 
 // ══════════════════════════════════════════════
 // JSON 转义工具
@@ -34,10 +36,6 @@ WifiCommandHandler   g_cmd_handler = nullptr;
 WifiStatusProvider   g_status_provider = nullptr;
 WifiImageHandler     g_image_handler = nullptr;
 WifiWSMessageHandler g_ws_msg_handler = nullptr;
-
-// WebSocket 客户端池
-#define MAX_WS_CLIENTS 4
-WiFiClient g_ws_clients[MAX_WS_CLIENTS];
 
 // MJPEG 流边界
 const char* STREAM_BOUNDARY = "FRAME_BOUNDARY";
@@ -94,6 +92,12 @@ refresh();setInterval(refresh,2000);
 </script></body></html>
 )rawliteral";
 
+}  // namespace
+
+// WebSocket 客户端池
+#define MAX_WS_CLIENTS 4
+WiFiClient g_ws_clients[MAX_WS_CLIENTS];
+
 // ══════════════════════════════════════════════
 // WebSocket 帧发送（手动构造，无外部依赖）
 // ══════════════════════════════════════════════
@@ -138,6 +142,8 @@ void ws_broadcast(const String& msg) {
 void ws_broadcast_status_json(const String& json) {
     ws_broadcast(json);
 }
+
+namespace {
 
 // ══════════════════════════════════════════════
 // WebSocket 握手 + 接收处理

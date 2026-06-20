@@ -65,7 +65,7 @@ size_t speaker_play(const int16_t* data, size_t samples, bool blocking) {
         if (chunk_bytes > chunk_samples * sizeof(int16_t)) {
             chunk_bytes = chunk_samples * sizeof(int16_t);
         }
-        size_t w = i2sOut.write((const uint8_t*)data + total_written, chunk_bytes);
+        size_t w = i2sOut.write((uint8_t*)data + total_written, chunk_bytes);
         if (w == 0) break;
         total_written += w;
         if (blocking) delay(1);  // 喂看门狗
