@@ -34,8 +34,8 @@
 #define SAMPLE_RATE   16000
 #define SAMPLE_BITS   16
 
-const char* WIFI_SSID     = "WHU-STU-7.4G";
-const char* WIFI_PASSWORD = "2842234004";
+const char* WIFI_SSID     = "OnePlus Ace 2 Pro";
+const char* WIFI_PASSWORD = "chengkangyu144";
 
 constexpr int SERVO_180_PIN = 21;
 constexpr int SERVO_360_PIN = 44;
@@ -378,8 +378,8 @@ void setup() {
     rf_init(RF_TX_PIN);
     set_last_result("RF: OK");
 
-    // 5b. UART → 51 MCU
-    uart_init();
+    // 5b. UART → 51 MCU (阶段C再启用，当前 GPIO9 与 LCD MOSI 冲突)
+    // uart_init();
 
     // 6. 摄像头
     if (!camera_init()) set_last_result("Camera: FAIL");
