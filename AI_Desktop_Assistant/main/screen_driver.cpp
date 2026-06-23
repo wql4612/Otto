@@ -275,3 +275,12 @@ bool screen_show_face_jpeg(const char* path) {
     unlock_screen();
     return ok;
 }
+
+void screen_enter_sleep() {
+    if (!is_ready || !tft) return;
+    if (!lock_screen()) return;
+    fill_screen_unlocked(ST77XX_BLACK);
+    tft->enableDisplay(false);
+    tft->enableSleep(true);
+    unlock_screen();
+}

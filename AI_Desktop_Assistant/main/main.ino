@@ -32,6 +32,7 @@
 #include "debug_log.h"
 #include "qwen_client.h"
 #include <esp_system.h>
+#include <esp_sleep.h>
 
 // ═══════════════════════════════════════
 // 配置
@@ -41,6 +42,7 @@
 #define VOICE_TEST_MS 2000
 #define VOICE_COMMAND_MS 5000
 #define WAKE_LISTENER_AUTOSTART_MS 6000
+#define DEEP_SLEEP_WAKE_MINUTES 30
 
 const char* WIFI_SSID     = "WHU-STU-7.4G";
 const char* WIFI_PASSWORD = "2842234004";
@@ -137,6 +139,8 @@ static bool     g_presence_last_object_near = false;
 static unsigned long g_presence_last_check_ms = 0;
 static unsigned long g_presence_last_trigger_ms = 0;
 static bool     g_ultrasonic_last_ok = false;
+static bool     g_sleep_pending = false;
+static unsigned long g_sleep_at_ms = 0;
 
 // FreeRTOS
 static QueueHandle_t g_cmd_queue = nullptr;
@@ -289,6 +293,36 @@ void update_presence_face(bool has_person) {
     } else {
         screen_clear(ST77XX_BLACK);
     }
+}
+
+void prepare_and_enter_deep_sleep() {
+    debug_log_append("[Sleep] Prepare deep sleep", "system");
+    set_last_result("Entering deep sleep");
+
+    voice_set_listener_enabled(false);
+    voice_stop_wake_listener();
+    voice_wait_listener_stopped(400);
+    g_voice_waiting_command = false;
+    g_voice_ack_pending = false;
+    g_wake_autostart_pending = false;
+
+    if (ENABLE_SERVO_180 && servo_180.attached()) servo_180.detach();
+    if (ENABLE_SERVO_360 && servo_360.attached()) servo_360.detach();
+
+    speaker_idle();
+    speaker_deinit();
+    camera_deinit();
+    screen_enter_sleep();
+
+    delay(80);
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_sleep_enable_timer_wakeup((uint64_t)DEEP_SLEEP_WAKE_MINUTES * 60ULL * 1000000ULL);
+
+    delay(120);
+    esp_deep_sleep_start();
 }
 
 void run_presence_probe_once() {
@@ -596,6 +630,10 @@ static bool handle_debug_command(const String& cmd, String& message) {
             return false;
         }
         message = "Ultrasonic: " + String(distance_cm, 1) + " cm";
+    } else if (cmd == "sleep_deep") {
+        g_sleep_pending = true;
+        g_sleep_at_ms = millis() + 800;
+        message = "Deep sleep armed: WiFi/API off, wake by timer or reset";
     }
     // ── RF ──
     else if (cmd == "rf_on") {
@@ -1005,6 +1043,11 @@ void loop() {
         if (voice_start_wake_listener()) {
             debug_log_append("[Wake] Listener auto-recovered", "system");
         }
+    }
+
+    if (g_sleep_pending && millis() >= g_sleep_at_ms) {
+        g_sleep_pending = false;
+        prepare_and_enter_deep_sleep();
     }
 
     // ── 8. 语音指令 → 动作 ──

@@ -29,6 +29,7 @@ void screen_show_rgb565(const uint16_t* data, int w, int h);
 
 // ── 表情显示（从 LittleFS JPEG 文件） ──
 bool screen_show_face_jpeg(const char* path);
+void screen_enter_sleep();
 
 // ── 表情索引 ──
 enum FaceIndex : uint8_t {
