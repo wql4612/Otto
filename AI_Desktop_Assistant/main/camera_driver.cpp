@@ -1,4 +1,5 @@
 #include "camera_driver.h"
+#include "debug_log.h"
 
 // ===== XIAO ESP32S3 Sense 摄像头引脚定义 =====
 #define PWDN_GPIO_NUM     -1
@@ -66,7 +67,7 @@ bool camera_init() {
 
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
-        Serial.printf("Camera init failed: 0x%x\n", err);
+        debug_log_printf("system", "Camera init failed: 0x%x", err);
         return false;
     }
 
@@ -76,7 +77,7 @@ bool camera_init() {
 
 camera_fb_t* camera_capture() {
     if (!is_initialized) {
-        Serial.println("Camera not initialized!");
+        debug_log_append("Camera not initialized!", "system");
         return NULL;
     }
     return esp_camera_fb_get();

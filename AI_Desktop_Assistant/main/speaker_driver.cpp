@@ -1,4 +1,5 @@
 #include "speaker_driver.h"
+#include "debug_log.h"
 
 #include <ESP_I2S.h>
 
@@ -21,7 +22,7 @@ bool speaker_init(uint8_t bclk_pin, uint8_t lrc_pin, uint8_t dout_pin,
 
     i2sOut.setPins(bclk_pin, lrc_pin, dout_pin);
     if (!i2sOut.begin(I2S_MODE_STD, sample_rate, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)) {
-        Serial.println("Speaker I2S init failed");
+        debug_log_append("Speaker I2S init failed", "system");
         return false;
     }
 

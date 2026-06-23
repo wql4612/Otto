@@ -8,6 +8,9 @@
  * @return true 成功，false 失败
  */
 bool mic_init();
+bool mic_acquire(uint32_t timeout_ms = 1000);
+void mic_release();
+bool mic_is_busy();
 
 struct MicDiagResult {
     esp_err_t last_err;

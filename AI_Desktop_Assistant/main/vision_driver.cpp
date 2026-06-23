@@ -13,6 +13,7 @@
 
 #include "vision_driver.h"
 #include "camera_driver.h"
+#include "debug_log.h"
 
 // ── JPEG 采样参数 ──
 #define SAMPLE_COUNT        200     // 每帧采样字节数
@@ -79,7 +80,7 @@ bool vision_init() {
     g_suggested_face = FACE_IDLE;
     g_person_last_seen = 0;
 
-    Serial.println("[Vision] Ready (JPEG sampling + frame diff)");
+    debug_log_append("[Vision] Ready (JPEG sampling + frame diff)", "system");
     return true;
 }
 
@@ -140,7 +141,7 @@ void vision_loop() {
             g_person_present = true;
             g_last_event = VISION_PERSON_ENTER;
             g_suggested_face = FACE_HAPPY;
-            Serial.printf("[Vision] Person ENTER (ratio=%.3f)\n", ratio);
+            debug_log_printf("detect", "[Vision] Person ENTER (ratio=%.3f)", ratio);
         } else {
             g_last_event = VISION_NONE;
         }
@@ -148,7 +149,7 @@ void vision_loop() {
         g_person_present = false;
         g_last_event = VISION_PERSON_LEAVE;
         g_suggested_face = FACE_SLEEP;
-        Serial.printf("[Vision] Person LEAVE (ratio=%.3f)\n", ratio);
+        debug_log_printf("detect", "[Vision] Person LEAVE (ratio=%.3f)", ratio);
     } else if (g_motion_detected && g_person_present) {
         g_last_event = VISION_MOTION;
         g_suggested_face = FACE_SURPRISED;

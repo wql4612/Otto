@@ -12,6 +12,11 @@ typedef String (*WifiStatusProvider)();
 typedef void (*WifiImageHandler)(const uint8_t* data, size_t len, size_t index, size_t total);
 typedef void (*WifiWSMessageHandler)(const String& msg);
 
+struct WifiUiConfig {
+    bool serve_embedded_ui;
+    bool serve_static_files;
+};
+
 // ── WiFi 连接 ──
 bool wifi_init(const char* ssid, const char* password,
                const char* device_name = "ai-desktop-assistant");
@@ -21,6 +26,9 @@ void wifi_print_status(Stream& out);
 
 // ── LittleFS ──
 bool wifi_littlefs_init();
+
+// ── UI 托管模式 ──
+void wifi_set_ui_config(const WifiUiConfig& config);
 
 // ── 回调设置 ──
 void wifi_set_command_handler(WifiCommandHandler handler);

@@ -6,7 +6,7 @@
 // ── Edge Impulse 模型开关 ──
 // 在 Edge Impulse 训练好语音 KWS 模型并导出 Arduino 库后，
 // 取消下面这行注释，并安装对应的库:
-// #define HAS_EI_VOICE_MODEL
+#define HAS_EI_VOICE_MODEL
 
 // ── 指令 ID（与 command_map.h 对应）──
 enum VoiceCommand : int8_t {
@@ -39,6 +39,17 @@ void voice_loop();
 bool        voice_wake_detected();   // 本周期是否检测到唤醒词
 VoiceCommand voice_last_command();   // 最近识别的指令（CMD_NONE = 无）
 void        voice_clear_command();   // 消费指令（读取后清零）
+bool        voice_run_wake_test(uint32_t timeout_ms, String& detail);
+bool        voice_start_wake_listener();
+void        voice_stop_wake_listener();
+bool        voice_wait_listener_stopped(uint32_t timeout_ms = 2500);
+bool        voice_listener_running();
+void        voice_set_listener_enabled(bool enabled);
+bool        voice_listener_enabled();
+void        voice_set_gate_threshold(uint16_t threshold);
+uint16_t    voice_gate_threshold();
+uint32_t    voice_last_energy_level();
+uint32_t    voice_last_peak_level();
 
 // ── 调试 ──
 const char* voice_command_name(VoiceCommand cmd);

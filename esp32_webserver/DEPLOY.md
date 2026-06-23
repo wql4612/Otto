@@ -74,6 +74,42 @@ esptool.py --port COM3 write_flash 0x290000 littlefs.bin
 5. 点击按钮 → 串口打印命令日志
 6. 表情切换: 访问 `/api/action?cmd=face_happy` 等
 
+## 混合方案（推荐）
+
+如果希望开发板长期独立运行时尽量少承担网页托管开销，可使用仓库中的电脑端面板：
+
+```text
+desktop_debug_panel/
+```
+
+使用方式：
+
+1. 保持 ESP32 正常连网
+2. 在电脑上启动静态服务器
+3. 浏览器访问本地页面
+4. 页面中填写 ESP32 地址
+
+例如：
+
+```bash
+cd desktop_debug_panel
+python3 -m http.server 8080
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8080
+```
+
+此模式下，ESP32 只保留轻量 API：
+
+- `GET /api/status`
+- `POST /api/action`
+- `POST /api/upload`
+
+默认不再托管完整控制面板页面。
+
 ## API 端点
 
 | 路径 | 方法 | 说明 |

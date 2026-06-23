@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Otto Desktop Debug Panel</title>
+<style>
+  :root {
+    --bg: #081019;
+    --panel: #0f1824;
+    --panel-2: #152233;
+    --line: #25384d;
+    --line-strong: #35506d;
+    --text: #dbe7f4;
+    --muted: #7e95ad;
+    --warm: #e4a74d;
+    --warm-soft: rgba(228, 167, 77, 0.14);
+    --ok: #7cc486;
+    --bad: #d16666;
+    --cyan: #65c3c7;
+    --radius: 14px;
+    --mono: "Cascadia Code", "Fira Code", "Consolas", monospace;
+    --ui: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--ui);
+    color: var(--text);
+    background:
+      radial-gradient(circle at top left, rgba(101,195,199,0.08), transparent 35%),
+      radial-gradient(circle at bottom right, rgba(228,167,77,0.08), transparent 35%),
+      linear-gradient(180deg, #081019, #0b121b 45%, #09111a);
+  }
+
+  .shell {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 22px;
+  }
+
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+
+  .brand h1 {
+    margin: 0;
+    font-size: 24px;
+    letter-spacing: 0.4px;
+  }
+
+  .brand p {
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: rgba(15, 24, 36, 0.86);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--bad);
+    box-shadow: 0 0 10px rgba(209, 102, 102, 0.35);
+  }
+
+  .dot.ok {
+    background: var(--ok);
+    box-shadow: 0 0 12px rgba(124, 196, 134, 0.45);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: 16px;
+  }
+
+  .card {
+    background: rgba(15, 24, 36, 0.92);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+  }
+
+  .card h2 {
+    margin: 0 0 14px;
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 1.4px;
+  }
+
+  .config-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 10px;
+  }
+
+  input[type="text"] {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    outline: none;
+    color: var(--text);
+    background: var(--panel-2);
+    font: 14px var(--mono);
+  }
+
+  button {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 11px 14px;
+    cursor: pointer;
+    font: 600 13px var(--ui);
+    transition: 0.18s ease;
+  }
+
+  button:hover {
+    border-color: var(--line-strong);
+    transform: translateY(-1px);
+  }
+
+  button.primary {
+    background: linear-gradient(135deg, rgba(228,167,77,0.18), rgba(228,167,77,0.08));
+    border-color: rgba(228,167,77,0.32);
+  }
+
+  .hint {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .kv-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .kv {
+    background: var(--panel-2);
+    border-radius: 12px;
+    padding: 12px;
+    min-height: 76px;
+  }
+
+  .kv .k {
+    color: var(--muted);
+    font-size: 11px;
+    margin-bottom: 8px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+  }
+
+  .kv .v {
+    font-size: 15px;
+    font-weight: 600;
+    word-break: break-word;
+  }
+
+  .device-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  .device {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    font-size: 12px;
+  }
+
+  .badge.on {
+    color: #09111a;
+    background: var(--warm);
+    border-color: var(--warm);
+  }
+
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .controls button {
+    text-align: left;
+    min-height: 50px;
+  }
+
+  .controls button span {
+    display: block;
+    color: var(--muted);
+    font: 11px var(--mono);
+    margin-top: 3px;
+  }
+
+  .slider-row {
+    margin-top: 14px;
+    background: var(--panel-2);
+    border-radius: 12px;
+    padding: 12px;
+  }
+
+  .slider-meta {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 8px;
+  }
+
+  input[type="range"] {
+    width: 100%;
+  }
+
+  .log-card {
+    margin-top: 16px;
+  }
+
+  .log {
+    max-height: 340px;
+    overflow: auto;
+    background: #0b121b;
+    border-radius: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255,255,255,0.03);
+  }
+
+  .entry {
+    display: grid;
+    grid-template-columns: 74px 1fr;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+
+  .entry:last-child { border-bottom: 0; }
+
+  .entry .t {
+    color: var(--muted);
+    font: 12px var(--mono);
+  }
+
+  .entry .m {
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+  }
+
+  .footer-note {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  @media (max-width: 900px) {
+    .grid {
+      grid-template-columns: 1fr;
+    }
+    .config-row {
+      grid-template-columns: 1fr;
+    }
+    .kv-grid, .controls {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar">
+    <div class="brand">
+      <h1>Otto Desktop Debug Panel</h1>
+      <p>Desktop-hosted panel · HTTP polling · ESP32 API-only mode</p>
+    </div>
+    <div class="status-pill">
+      <span class="dot" id="connDot"></span>
+      <span id="connText">未连接</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>Connection</h2>
+        <div class="config-row">
+          <input id="espBaseUrl" type="text" placeholder="http://192.168.1.123">
+          <button class="primary" id="saveBtn">保存地址</button>
+          <button id="refreshBtn">立即刷新</button>
+        </div>
+        <div class="hint">
+          这里填写 ESP32 的局域网地址。页面运行在电脑上，只通过 HTTP 请求开发板的 `/api/status` 和 `/api/action`。
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>System Status</h2>
+        <div class="kv-grid">
+          <div class="kv"><div class="k">ESP32 IP</div><div class="v" id="ipText">-</div></div>
+          <div class="kv"><div class="k">Uptime</div><div class="v" id="uptimeText">-</div></div>
+          <div class="kv"><div class="k">Last Result</div><div class="v" id="lastResultText">-</div></div>
+          <div class="kv"><div class="k">Face</div><div class="v" id="faceText">-</div></div>
+          <div class="kv"><div class="k">Person</div><div class="v" id="personText">-</div></div>
+          <div class="kv"><div class="k">Qwen</div><div class="v" id="qwenText">-</div></div>
+          <div class="kv"><div class="k">Ultrasonic</div><div class="v" id="ultrasonicText">-</div></div>
+          <div class="kv"><div class="k">Ultrasonic Read</div><div class="v" id="ultrasonicReadText">-</div></div>
+          <div class="kv"><div class="k">Wake Gate</div><div class="v" id="wakeGateText">-</div></div>
+          <div class="kv"><div class="k">Wake Peak</div><div class="v" id="wakePeakText">-</div></div>
+        </div>
+
+        <div class="device-list">
+          <div class="device"><span>台灯</span><span class="badge" id="lightBadge">关</span></div>
+          <div class="device"><span>音响</span><span class="badge" id="speakerBadge">关</span></div>
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-meta">
+            <span>Wake Threshold</span>
+            <span id="wakeThresholdValue">1800</span>
+          </div>
+          <input id="wakeThreshold" type="range" min="200" max="12000" step="100" value="1800">
+          <div style="margin-top:10px">
+            <button id="applyThresholdBtn">应用阈值</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Quick Actions</h2>
+        <div class="controls" id="controls">
+          <button data-cmd="ping">Ping<span>连通性测试</span></button>
+          <button data-cmd="wifi_status">WiFi 状态<span>查看联网状态</span></button>
+          <button data-cmd="mic_diag">麦克风诊断<span>PDM 输入检查</span></button>
+          <button data-cmd="screen_demo">屏幕测试<span>TFT 图案显示</span></button>
+          <button data-cmd="qwen_status">Qwen 状态<span>检查云端配置</span></button>
+          <button data-cmd="qwen_recognize">Qwen 识别<span>拍照并做人脸判定</span></button>
+          <button data-cmd="qwen_voice_test">Qwen 语音测试<span>录音后上云识别</span></button>
+          <button data-cmd="qwen_voice_sample">官方样例语音<span>验证 ASR 接口</span></button>
+          <button data-cmd="wake_test">本地唤醒测试<span>单次本地模型验证</span></button>
+          <button data-cmd="ultrasonic_test">测距测试<span>立即读取一次距离</span></button>
+          <button data-cmd="audio_test_wake">唤醒提示音<span>测试 wake.wav</span></button>
+          <button data-cmd="audio_test_on">应答音 开<span>测试 light_on.wav</span></button>
+          <button data-cmd="audio_test_off">应答音 关<span>测试 light_off.wav</span></button>
+          <button data-cmd="light_on">台灯开启<span>直接下发开灯</span></button>
+          <button data-cmd="light_off">台灯关闭<span>直接下发关灯</span></button>
+          <button data-cmd="face_idle">待机表情<span>切换到 idle</span></button>
+          <button data-cmd="face_listening">倾听表情<span>切换到 listening</span></button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Servo Tests</h2>
+        <div class="controls" id="servoControls">
+          <button data-cmd="servo180_0">180° 舵机 0°<span>GPIO4</span></button>
+          <button data-cmd="servo180_90">180° 舵机 90°<span>GPIO4</span></button>
+          <button data-cmd="servo180_180">180° 舵机 180°<span>GPIO4</span></button>
+          <button data-cmd="servo360_rev">360° 反转<span>GPIO8</span></button>
+          <button data-cmd="servo360_stop">360° 停止<span>GPIO8</span></button>
+          <button data-cmd="servo360_fwd">360° 正转<span>GPIO8</span></button>
+        </div>
+      </div>
+
+      <div class="card log-card">
+        <h2>Debug Log</h2>
+        <div class="log" id="logBox"></div>
+        <div class="footer-note">
+          页面不会连接板端 WebSocket，也不会请求视频流。它只定时拉取状态，适合开发板长期独立运行时的轻量调试。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY = 'otto_esp32_base_url';
+const FACE_NAMES = {
+  0: 'happy',
+  1: 'idle',
+  2: 'listening',
+  3: 'surprised',
+  4: 'confused'
+};
+
+let baseUrl = '';
+let lastDebugLog = '';
+let lastBootId = null;
+let pollTimer = null;
+
+function nowText() {
+  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function addLog(message) {
+  if (!message) return;
+  const row = document.createElement('div');
+  row.className = 'entry';
+  row.innerHTML = `<div class="t">${nowText()}</div><div class="m"></div>`;
+  row.querySelector('.m').textContent = message;
+  const logBox = document.getElementById('logBox');
+  logBox.appendChild(row);
+  while (logBox.children.length > 220) {
+    logBox.removeChild(logBox.firstChild);
+  }
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function clearLog() {
+  document.getElementById('logBox').innerHTML = '';
+}
+
+function normalizeBaseUrl(url) {
+  return (url || '').trim().replace(/\/+$/, '');
+}
+
+function setConnection(ok, text) {
+  const dot = document.getElementById('connDot');
+  dot.classList.toggle('ok', !!ok);
+  document.getElementById('connText').textContent = text || (ok ? '已连接' : '未连接');
+}
+
+function setBadge(id, on) {
+  const el = document.getElementById(id);
+  el.textContent = on ? '开' : '关';
+  el.classList.toggle('on', !!on);
+}
+
+function updateStatus(data) {
+  document.getElementById('ipText').textContent = data.ip || '-';
+  document.getElementById('uptimeText').textContent = `${data.uptime_s || 0} s`;
+  document.getElementById('lastResultText').textContent = data.last_result || '-';
+  document.getElementById('faceText').textContent = FACE_NAMES[data.face] || String(data.face ?? '-');
+  document.getElementById('personText').textContent = data.person ? '检测到人' : '未检测到人';
+  document.getElementById('qwenText').textContent = data.qwen || '-';
+  document.getElementById('ultrasonicText').textContent = data.ultrasonic_ready
+    ? `${Number(data.ultrasonic_distance_cm ?? -1).toFixed(1)} cm`
+    : '未初始化';
+  document.getElementById('ultrasonicReadText').textContent = data.ultrasonic_ready
+    ? (data.ultrasonic_ok ? '读取成功' : '读取超时')
+    : '未初始化';
+  document.getElementById('wakeGateText').textContent =
+    `${data.wake_energy || 0} / 阈值 ${data.wake_threshold || 0}${data.wake_listener ? ' · 监听中' : ' · 未监听'}`;
+  document.getElementById('wakePeakText').textContent = String(data.wake_peak || 0);
+
+  setBadge('lightBadge', data.light);
+  setBadge('speakerBadge', data.speaker);
+
+  const slider = document.getElementById('wakeThreshold');
+  const valueText = document.getElementById('wakeThresholdValue');
+  if (data.wake_threshold && document.activeElement !== slider) {
+    slider.value = data.wake_threshold;
+    valueText.textContent = data.wake_threshold;
+  }
+
+  if (data.boot_id !== undefined && data.boot_id !== lastBootId) {
+    lastBootId = data.boot_id;
+    lastDebugLog = '';
+    clearLog();
+    addLog(`[Panel] 检测到设备重启，boot_id=${data.boot_id}`);
+  }
+
+  if (typeof data.debug_log === 'string') {
+    if (!lastDebugLog || !data.debug_log.startsWith(lastDebugLog)) {
+      clearLog();
+      data.debug_log.split('\n').map(x => x.trim()).filter(Boolean).forEach(addLog);
+    } else {
+      data.debug_log.slice(lastDebugLog.length).split('\n').map(x => x.trim()).filter(Boolean).forEach(addLog);
+    }
+    lastDebugLog = data.debug_log;
+  }
+}
+
+async function apiFetch(path, options = {}) {
+  if (!baseUrl) {
+    throw new Error('请先填写 ESP32 地址');
+  }
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  const raw = await response.text();
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+  if (!response.ok) {
+    throw new Error((data && data.message) || raw || `HTTP ${response.status}`);
+  }
+  return data;
+}
+
+async function refreshStatus() {
+  try {
+    const data = await apiFetch('/api/status');
+    setConnection(true, `已连接 · ${baseUrl}`);
+    updateStatus(data);
+  } catch (error) {
+    setConnection(false, `连接失败 · ${error.message}`);
+  }
+}
+
+async function runCommand(cmd) {
+  try {
+    const data = await apiFetch(`/api/action?cmd=${encodeURIComponent(cmd)}`, {
+      method: 'POST'
+    });
+    addLog(`${cmd} · ${data && data.message ? data.message : 'OK'}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`${cmd} · ${error.message}`);
+  }
+}
+
+function saveBaseUrl() {
+  const input = document.getElementById('espBaseUrl');
+  baseUrl = normalizeBaseUrl(input.value);
+  localStorage.setItem(STORAGE_KEY, baseUrl);
+  if (baseUrl) {
+    addLog(`[Panel] 已保存 ESP32 地址: ${baseUrl}`);
+    refreshStatus();
+  }
+}
+
+function loadBaseUrl() {
+  const fromQuery = new URLSearchParams(window.location.search).get('esp');
+  const saved = fromQuery || localStorage.getItem(STORAGE_KEY) || 'http://192.168.1.123';
+  baseUrl = normalizeBaseUrl(saved);
+  document.getElementById('espBaseUrl').value = baseUrl;
+}
+
+document.getElementById('saveBtn').addEventListener('click', saveBaseUrl);
+document.getElementById('refreshBtn').addEventListener('click', refreshStatus);
+document.getElementById('applyThresholdBtn').addEventListener('click', () => {
+  runCommand(`wake_threshold:${document.getElementById('wakeThreshold').value}`);
+});
+document.getElementById('wakeThreshold').addEventListener('input', (e) => {
+  document.getElementById('wakeThresholdValue').textContent = e.target.value;
+});
+
+function bindCommandPanel(panelId) {
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  panel.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-cmd]');
+    if (!button) return;
+    runCommand(button.dataset.cmd);
+  });
+}
+
+bindCommandPanel('controls');
+bindCommandPanel('servoControls');
+
+loadBaseUrl();
+refreshStatus();
+pollTimer = setInterval(refreshStatus, 1000);
+</script>
+</body>
+</html>

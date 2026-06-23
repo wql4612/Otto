@@ -25,6 +25,9 @@
 #include "speaker_driver.h"
 #include "wifi_driver.h"
 #include "uart_driver.h"
+#include "debug_log.h"
+
+constexpr int COMMAND_SERVO_180_PIN = 4;
 
 // ── 外部引用（定义在 main.ino）──
 struct SystemState {
@@ -47,7 +50,7 @@ inline void execute_voice_command(VoiceCommand cmd) {
     if (cmd == CMD_NONE) return;
 
     const char* name = voice_command_name(cmd);
-    Serial.printf("[Cmd] Voice: %s (id=%d)\n", name, (int)cmd);
+    debug_log_printf("command", "[Cmd] Voice: %s (id=%d)", name, (int)cmd);
 
     switch (cmd) {
         // ── 灯光 ──
@@ -93,7 +96,7 @@ inline void execute_voice_command(VoiceCommand cmd) {
 
         // ── 互动 ──
         case CMD_HELLO:
-            if (!servo_180.attached()) servo_180.attach(21);
+            if (!servo_180.attached()) servo_180.attach(COMMAND_SERVO_180_PIN);
             servo_180.set_angle(30);
             delay(400);
             servo_180.set_angle(90);
@@ -103,7 +106,7 @@ inline void execute_voice_command(VoiceCommand cmd) {
             play_tone(1100, 100);
             break;
         case CMD_COME_HERE:
-            if (!servo_180.attached()) servo_180.attach(21);
+            if (!servo_180.attached()) servo_180.attach(COMMAND_SERVO_180_PIN);
             servo_180.set_angle(30);
             delay(300);
             servo_180.set_angle(150);
@@ -171,14 +174,14 @@ inline void execute_vision_event(VisionEvent event) {
             uart_relay_ctrl(1, true);
             g_current_face = FACE_HAPPY;
             screen_show_face_jpeg(FACE_FILES[FACE_HAPPY]);
-            if (!servo_180.attached()) servo_180.attach(21);
+            if (!servo_180.attached()) servo_180.attach(COMMAND_SERVO_180_PIN);
             servo_180.set_angle(30);
             delay(300);
             servo_180.set_angle(90);
             play_tone(660, 80);
             play_tone(880, 120);
             log_event("detect", "检测到人进入 → 自动开灯");
-            Serial.println("[Vision] Person ENTER → 开灯 + 欢迎");
+            debug_log_append("[Vision] Person ENTER -> 开灯 + 欢迎", "detect");
             break;
 
         case VISION_PERSON_LEAVE:
@@ -188,7 +191,7 @@ inline void execute_vision_event(VisionEvent event) {
             g_current_face = FACE_SLEEP;
             screen_show_face_jpeg(FACE_FILES[FACE_SLEEP]);
             log_event("detect", "人已离开 → 延时关灯");
-            Serial.println("[Vision] Person LEAVE → 关灯 + 待机");
+            debug_log_append("[Vision] Person LEAVE -> 关灯 + 待机", "detect");
             break;
 
         case VISION_MOTION:
@@ -198,7 +201,7 @@ inline void execute_vision_event(VisionEvent event) {
             g_current_face = FACE_SURPRISED;
             screen_show_face_jpeg(FACE_FILES[FACE_SURPRISED]);
             log_event("detect", g_sys.light_on ? "挥手 → 开灯" : "挥手 → 关灯");
-            Serial.printf("[Vision] Motion → Light %s\n", g_sys.light_on ? "ON" : "OFF");
+            debug_log_printf("detect", "[Vision] Motion -> Light %s", g_sys.light_on ? "ON" : "OFF");
             break;
 
         default: break;
