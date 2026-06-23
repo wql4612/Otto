@@ -1,23 +1,9 @@
 /**
- * voice_driver — 语音识别模块
+ * voice_driver — 本地唤醒词检测 (KWS)
  *
- * Edge Impulse KWS 占位 (B1):
- *   HAS_EI_VOICE_MODEL 未定义时，模块处于旁路模式：
- *   - voice_init() 检测麦克风可用性
- *   - voice_loop() 空转（不执行推理）
- *   - voice_last_command() 始终返回 CMD_NONE
- *
- * Edge Impulse 模型训练完成后激活步骤:
- *   1. 访问 edgeimpulse.com → 创建项目
- *   2. 用 XIAO ESP32S3 Sense 录制中文语音样本:
- *      - 唤醒词 "小猫咪": 50-100 条
- *      - 15 条中文指令各 50 条
- *      - noise/unknown 各 30 条
- *   3. 创建 Impulse: 1 秒窗口, MFCC 特征, CNN 分类
- *   4. 训练 → 验证准确率 > 85%
- *   5. 导出为 "Arduino library" → 安装到 Arduino IDE
- *   6. 取消 #define HAS_EI_VOICE_MODEL 注释
- *   7. 重新编译上传
+ * 使用 Edge Impulse 训练的唤醒词模型（otto-wake），检测"小猫咪"。
+ * 不调用 ei_microphone_init()，改用 mic_driver 的 mic_record() 录音，
+ * 避免 I2S 冲突，唤醒后可直接切换到音频流模式。
  *
  * PDM 麦克风: CLK=42, DIN=41 (XIAO ESP32S3 Sense 板载)
  */
@@ -25,22 +11,25 @@
 #include "voice_driver.h"
 #include "mic_driver.h"
 
+#ifdef HAS_EI_VOICE_MODEL
+#include <otto-wake_inferencing.h>
+#endif
+
 namespace {
 
 static bool g_initialized = false;
-static bool g_model_loaded = false;
 
 static VoiceCommand g_last_cmd = CMD_NONE;
 static bool         g_wake_detected = false;
 
-// 防抖: 同一个指令不连续触发
-static VoiceCommand g_prev_cmd = CMD_NONE;
-static unsigned long g_last_cmd_ms = 0;
+// KWS 录音缓冲
+#define KWS_BUF_BYTES   (EI_CLASSIFIER_RAW_SAMPLE_COUNT * sizeof(int16_t))  // 32000
+static uint8_t g_kws_buf[KWS_BUF_BYTES];
 
 }  // namespace
 
 // ═══════════════════════════════════════
-// 指令名映射
+// 指令名映射（保留：供服务器返回的指令使用）
 // ═══════════════════════════════════════
 const char* voice_command_name(VoiceCommand cmd) {
     switch (cmd) {
@@ -63,48 +52,44 @@ const char* voice_command_name(VoiceCommand cmd) {
     }
 }
 
+#ifdef HAS_EI_VOICE_MODEL
+// ═══════════════════════════════════════
+// EI signal 回调: int16 PCM → float
+// ═══════════════════════════════════════
+static const int16_t* g_signal_samples = nullptr;
+
+static int kws_get_data(size_t offset, size_t length, float* out_ptr) {
+    for (size_t i = 0; i < length; i++) {
+        out_ptr[i] = (float)g_signal_samples[offset + i] / 32768.0f;
+    }
+    return 0;
+}
+#endif
+
 // ═══════════════════════════════════════
 // 公共 API
 // ═══════════════════════════════════════
 
 bool voice_init() {
     g_initialized = false;
-    g_model_loaded = false;
     g_last_cmd = CMD_NONE;
     g_wake_detected = false;
 
 #ifdef HAS_EI_VOICE_MODEL
-    // ── Edge Impulse KWS 模型初始化 ──
-    // TODO: 替换 <your-project_inferencing.h> 为实际的库名
-    //
-    // #include <otto-voice_inferencing.h>
-    //
-    // 初始化 Edge Impulse 推理引擎:
-    //   run_classifier_init();
-    //
-    // 配置 PDM 麦克风（Edge Impulse 使用自己的 I2S 实例）:
-    //   // PDM 引脚: CLK=42, DIN=41
-    //   ei_microphone_init();
-    //
-    // 加载模型:
-    //   g_model_loaded = true;
-    //
-    // Serial.println("[Voice] Edge Impulse KWS model loaded");
-    // Serial.println("[Voice] 唤醒词: 小猫咪, 指令: 15 条中文");
-
-    Serial.println("[Voice] EI model placeholder — needs trained model");
+    // 初始化 Edge Impulse 推理引擎（不调用 ei_microphone_init，用我们自己的 mic）
+    run_classifier_init();
+    Serial.println("[Voice] EI KWS model loaded (otto-wake)");
+    Serial.println("[Voice] Wake word: 小猫咪");
     g_initialized = true;
     return true;
-
 #else
-    // ── 旁路模式: 检测麦克风可用性 ──
+    // 旁路模式：检测麦克风可用性
     if (!mic_init()) {
         Serial.println("[Voice] Mic init failed (optional)");
     } else {
         Serial.println("[Voice] Mic OK (PDM 16kHz)");
     }
     Serial.println("[Voice] Bypass mode — no EI model loaded");
-    Serial.println("[Voice] Train KWS model at edgeimpulse.com to enable");
     g_initialized = true;
     return true;
 #endif
@@ -117,47 +102,41 @@ void voice_loop() {
     g_last_cmd = CMD_NONE;
 
 #ifdef HAS_EI_VOICE_MODEL
-    // ── Edge Impulse 推理循环 ──
-    // TODO: 集成实际的 EI 推理
-    //
-    // 持续音频采集 + 推理:
-    //   ei_impulse_result_t result;
-    //   signal_t signal = audio_signal_from_mic();
-    //   run_classifier(&signal, &result, false);
-    //
-    // 检查结果:
-    //   if (result.classification[0].value > 0.8f) {
-    //       int idx = result.classification[0].label_index;
-    //       const char* label = result.classification[0].label;
-    //
-    //       // 标签 "wake" 或 high confidence → 唤醒词
-    //       // 其他标签 → 指令 ID
-    //       // 映射 label → VoiceCommand
-    //   }
-    //
-    // 防抖: 同一指令 2 秒内不重复触发
-    //   if (cmd != g_prev_cmd || millis() - g_last_cmd_ms > 2000) {
-    //       g_last_cmd = cmd;
-    //       g_prev_cmd = cmd;
-    //       g_last_cmd_ms = millis();
-    //   }
+    // 录制 1 秒音频（16kHz 16bit mono = 32000 bytes）
+    size_t got = mic_record(g_kws_buf, KWS_BUF_BYTES, NULL);
+    if (got < KWS_BUF_BYTES) return;
 
-    // 示例: 以下为伪代码框架
-    // run_classifier_continuous();
-    // if (ei_result_available()) {
-    //     auto result = ei_get_result();
-    //     if (result.label == "wake" && result.value > 0.8) {
-    //         g_wake_detected = true;
-    //     } else if (result.value > 0.7) {
-    //         g_last_cmd = map_label_to_command(result.label);
-    //         Serial.printf("[Voice] Command: %s (%.2f)\n",
-    //                       voice_command_name(g_last_cmd), result.value);
-    //     }
-    // }
+    // 构建 signal_t 指向录音缓冲
+    g_signal_samples = (const int16_t*)g_kws_buf;
+    signal_t signal;
+    signal.total_length = EI_CLASSIFIER_RAW_SAMPLE_COUNT;  // 16000 采样点
+    signal.get_data = kws_get_data;
 
-#else
-    // 旁路: 无操作
-    // (mic_driver 不在此处持续录音以避免与 wifi_driver 抢 CPU)
+    // 推理
+    ei_impulse_result_t result;
+    EI_IMPULSE_ERROR err = run_classifier(&signal, &result, false);
+    if (err != EI_IMPULSE_OK) return;
+
+    // 找最高置信度的标签
+    float max_val = 0.0f;
+    int max_idx = -1;
+    for (size_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+        if (result.classification[i].value > max_val) {
+            max_val = result.classification[i].value;
+            max_idx = (int)i;
+        }
+    }
+
+    // 唤醒词检测
+    if (max_idx >= 0 && max_val > 0.8f) {
+        const char* label = ei_classifier_inferencing_categories[max_idx];
+        if (strcmp(label, "wake") == 0) {
+            g_wake_detected = true;
+            Serial.printf("[Wake] 小猫咪 (%.2f)\n", max_val);
+        } else {
+            Serial.printf("[Voice] %s (%.2f) — ignored\n", label, max_val);
+        }
+    }
 #endif
 }
 
@@ -168,10 +147,16 @@ bool voice_wake_detected() {
 }
 
 VoiceCommand voice_last_command() {
-    VoiceCommand cmd = g_last_cmd;
-    return cmd;
+    return g_last_cmd;
 }
 
 void voice_clear_command() {
     g_last_cmd = CMD_NONE;
+}
+
+// ═══════════════════════════════════════
+// 供 main.ino 设置服务器返回的指令
+// ═══════════════════════════════════════
+void voice_set_command(VoiceCommand cmd) {
+    g_last_cmd = cmd;
 }

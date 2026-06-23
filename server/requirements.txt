@@ -1,0 +1,18 @@
+# 阿里云 DashScope SDK（ASR + 大模型调用）
+dashscope>=1.14.0
+
+# OpenAI 兼容客户端（调用 Qwen3-Omni）
+openai>=1.0.0
+
+# Web 框架
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+starlette>=0.35.0
+
+# 环境变量管理
+python-dotenv>=1.0.0
+
+# 以下为可选依赖
+# Pillow>=10.0.0       # 选装：高级屏幕渲染
+# opencv-python>=4.8.0 # 选装：电脑摄像头
+# audioop-lts>=0.2.1   # 选装：Python 3.13+ 需要

@@ -1,1 +1,4 @@
 .superpowers/
+.env
+*.zip
+ai_desktop_cat_latest.zip

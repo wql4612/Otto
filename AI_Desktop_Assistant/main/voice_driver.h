@@ -4,9 +4,8 @@
 #include <Arduino.h>
 
 // ── Edge Impulse 模型开关 ──
-// 在 Edge Impulse 训练好语音 KWS 模型并导出 Arduino 库后，
-// 取消下面这行注释，并安装对应的库:
-// #define HAS_EI_VOICE_MODEL
+// 已训练唤醒词模型 otto-wake，取消注释以启用本地 KWS:
+#define HAS_EI_VOICE_MODEL
 
 // ── 指令 ID（与 command_map.h 对应）──
 enum VoiceCommand : int8_t {
@@ -39,6 +38,7 @@ void voice_loop();
 bool        voice_wake_detected();   // 本周期是否检测到唤醒词
 VoiceCommand voice_last_command();   // 最近识别的指令（CMD_NONE = 无）
 void        voice_clear_command();   // 消费指令（读取后清零）
+void        voice_set_command(VoiceCommand cmd);  // 由服务器消息设置指令
 
 // ── 调试 ──
 const char* voice_command_name(VoiceCommand cmd);

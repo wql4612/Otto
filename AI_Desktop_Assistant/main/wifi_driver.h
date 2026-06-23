@@ -12,6 +12,10 @@ typedef String (*WifiStatusProvider)();
 typedef void (*WifiImageHandler)(const uint8_t* data, size_t len, size_t index, size_t total);
 typedef void (*WifiWSMessageHandler)(const String& msg);
 
+// 云桥接回调（Python 服务器 → ESP32）
+typedef void (*CloudTextHandler)(const String& msg);
+typedef void (*CloudBinaryHandler)(const uint8_t* data, size_t len);
+
 // ── WiFi 连接 ──
 bool wifi_init(const char* ssid, const char* password,
                const char* device_name = "ai-desktop-assistant");
@@ -37,5 +41,14 @@ void wifi_handle_client();
 
 // ── 工具 ──
 String json_escape(const String& input);
+
+// ── 云桥接 (ESP32 → Python 服务器 WebSocket 客户端) ──
+bool cloud_bridge_init(const char* server_ip, uint16_t port = 8765);
+bool cloud_bridge_connected();
+void cloud_bridge_loop();
+bool cloud_bridge_send_text(const String& msg);
+bool cloud_bridge_send_binary(const uint8_t* data, size_t len);
+void cloud_bridge_on_text(CloudTextHandler handler);
+void cloud_bridge_on_binary(CloudBinaryHandler handler);
 
 #endif

@@ -491,3 +491,160 @@ void wifi_handle_client() {
     g_server.handleClient();
     ws_handle_clients();
 }
+
+// ══════════════════════════════════════════════
+// 云桥接 — WebSocket 客户端（连 Python 服务器）
+// ══════════════════════════════════════════════
+namespace {
+
+WiFiClient g_cloud_client;
+bool g_cloud_connected = false;
+CloudTextHandler g_cloud_text_handler = nullptr;
+CloudBinaryHandler g_cloud_binary_handler = nullptr;
+
+// 客户端 WebSocket 握手
+bool cloud_ws_handshake(const char* host, uint16_t port, const char* path) {
+    g_cloud_client.stop();
+
+    if (!g_cloud_client.connect(host, port)) {
+        Serial.printf("[Cloud] TCP connect to %s:%d failed\n", host, port);
+        return false;
+    }
+
+    // 生成随机 WebSocket key
+    uint8_t key_bytes[16];
+    for (int i = 0; i < 16; i++) key_bytes[i] = (uint8_t)random(256);
+    String ws_key = base64::encode(key_bytes, 16);
+
+    // 发送 HTTP Upgrade 请求
+    g_cloud_client.printf("GET %s HTTP/1.1\r\n", path);
+    g_cloud_client.printf("Host: %s:%d\r\n", host, port);
+    g_cloud_client.println("Upgrade: websocket");
+    g_cloud_client.println("Connection: Upgrade");
+    g_cloud_client.printf("Sec-WebSocket-Key: %s\r\n", ws_key.c_str());
+    g_cloud_client.println("Sec-WebSocket-Version: 13");
+    g_cloud_client.println();
+    g_cloud_client.flush();
+
+    // 等待并读取响应
+    unsigned long start = millis();
+    String response;
+    while (millis() - start < 3000) {
+        while (g_cloud_client.available()) {
+            response += (char)g_cloud_client.read();
+        }
+        if (response.indexOf("\r\n\r\n") >= 0) break;
+        delay(5);
+    }
+
+    if (response.indexOf("101") >= 0) {
+        // 验证 Sec-WebSocket-Accept
+        int accept_idx = response.indexOf("Sec-WebSocket-Accept:");
+        if (accept_idx >= 0) {
+            accept_idx += 22;
+            int accept_end = response.indexOf('\r', accept_idx);
+            String server_accept = response.substring(accept_idx, accept_end);
+            server_accept.trim();
+
+            // 计算期望的 accept 值
+            String expected_key = ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+            uint8_t sha1[20];
+            mbedtls_sha1_context ctx;
+            mbedtls_sha1_init(&ctx);
+            mbedtls_sha1_starts(&ctx);
+            mbedtls_sha1_update(&ctx, (const uint8_t*)expected_key.c_str(), expected_key.length());
+            mbedtls_sha1_finish(&ctx, sha1);
+            mbedtls_sha1_free(&ctx);
+
+            String expected_accept = base64::encode(sha1, 20);
+            if (server_accept == expected_accept) {
+                Serial.println("[Cloud] WebSocket handshake OK");
+                return true;
+            }
+            Serial.println("[Cloud] Accept key mismatch");
+        }
+    }
+
+    Serial.printf("[Cloud] Handshake failed: %s\n", response.c_str());
+    g_cloud_client.stop();
+    return false;
+}
+
+}  // namespace
+
+bool cloud_bridge_init(const char* server_ip, uint16_t port) {
+    if (g_cloud_connected) {
+        g_cloud_client.stop();
+        g_cloud_connected = false;
+    }
+
+    if (!cloud_ws_handshake(server_ip, port, "/ws_audio")) {
+        return false;
+    }
+
+    g_cloud_connected = true;
+    Serial.printf("[Cloud] Connected to %s:%d\n", server_ip, port);
+    return true;
+}
+
+bool cloud_bridge_connected() {
+    if (!g_cloud_connected) return false;
+    if (!g_cloud_client.connected()) {
+        g_cloud_connected = false;
+        return false;
+    }
+    return true;
+}
+
+void cloud_bridge_loop() {
+    if (!cloud_bridge_connected()) return;
+
+    uint8_t opcode;
+    uint8_t* payload;
+    size_t len;
+
+    while (g_cloud_client.available()) {
+        if (!ws_read_frame(g_cloud_client, opcode, payload, len)) break;
+
+        if (opcode == 0x08) {  // Close
+            free(payload);
+            g_cloud_client.stop();
+            g_cloud_connected = false;
+            Serial.println("[Cloud] Server closed connection");
+            break;
+        }
+        if (opcode == 0x09) {  // Ping → Pong
+            ws_send_frame(g_cloud_client, payload, len, 0x8A);
+            free(payload);
+            continue;
+        }
+        if (opcode == 0x01) {  // Text (JSON 消息)
+            if (g_cloud_text_handler) {
+                String msg;
+                msg.concat((const char*)payload);
+                g_cloud_text_handler(msg);
+            }
+        }
+        if (opcode == 0x02) {  // Binary (TTS 音频)
+            if (g_cloud_binary_handler) {
+                g_cloud_binary_handler(payload, len);
+            }
+        }
+        free(payload);
+    }
+}
+
+bool cloud_bridge_send_text(const String& msg) {
+    if (!cloud_bridge_connected()) return false;
+    ws_send_text(g_cloud_client, msg);
+    return true;
+}
+
+bool cloud_bridge_send_binary(const uint8_t* data, size_t len) {
+    if (!cloud_bridge_connected()) return false;
+    ws_send_frame(g_cloud_client, data, len, 0x82);
+    return true;
+}
+
+void cloud_bridge_on_text(CloudTextHandler handler)  { g_cloud_text_handler = handler; }
+void cloud_bridge_on_binary(CloudBinaryHandler handler) { g_cloud_binary_handler = handler; }
