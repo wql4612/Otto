@@ -23,6 +23,7 @@ bool wifi_init(const char* ssid, const char* password,
 bool wifi_is_connected();
 String wifi_ip_string();
 void wifi_print_status(Stream& out);
+String wifi_last_ws_remote_ip();
 
 // ── LittleFS ──
 bool wifi_littlefs_init();

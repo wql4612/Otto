@@ -47,20 +47,21 @@ static bool g_listener_enabled = false;
 
 #ifdef HAS_EI_VOICE_MODEL
 static int16_t* g_infer_buffer_a = nullptr;
+static int16_t* g_infer_buffer_b = nullptr;
+static int16_t* g_infer_window_buffer = nullptr;
 static int16_t* g_active_infer_buffer = nullptr;
 static size_t g_infer_buffer_samples = 0;
+static size_t g_chunk_buffer_samples = 0;
 static constexpr float kWakeThreshold = EI_CLASSIFIER_THRESHOLD;
 static constexpr const char* kWakeLabel = "wake";
 static constexpr const char* kOnLabel = "on";
 static constexpr const char* kOffLabel = "off";
 static TaskHandle_t g_wake_task = nullptr;
 static bool g_wake_task_running = false;
-static volatile uint16_t g_gate_threshold = 1800;
 static volatile uint32_t g_last_energy = 0;
-static volatile uint32_t g_last_peak = 0;
-static constexpr uint32_t kGateChunkMs = 160;
-static constexpr uint32_t kGateCooldownMs = 350;
-static constexpr uint8_t kGateHitRequired = 2;
+static volatile uint32_t g_prev_energy = 0;
+static constexpr uint32_t kGateChunkMs = 500;
+static constexpr uint32_t kWakeInferenceCooldownMs = 80;
 
 static int wake_signal_get_data(size_t offset, size_t length, float *out_ptr) {
     if (!g_active_infer_buffer || offset + length > g_infer_buffer_samples) return -1;
@@ -72,21 +73,47 @@ static bool is_wake_label(const char* label) {
     return label && strcmp(label, kWakeLabel) == 0;
 }
 
-static bool ensure_wake_buffer(size_t infer_samples, String* err = nullptr) {
+static bool ensure_wake_buffers(size_t infer_samples, size_t chunk_samples, String* err = nullptr) {
     const size_t infer_bytes = infer_samples * sizeof(int16_t);
-    if (!g_infer_buffer_a || g_infer_buffer_samples != infer_samples) {
+    const size_t chunk_bytes = chunk_samples * sizeof(int16_t);
+
+    if (!g_infer_window_buffer || g_infer_buffer_samples != infer_samples) {
+        if (g_infer_window_buffer) {
+            free(g_infer_window_buffer);
+            g_infer_window_buffer = nullptr;
+        }
+        g_infer_window_buffer = (int16_t*)ps_malloc(infer_bytes);
+        if (!g_infer_window_buffer) {
+            if (err) *err = "Wake window alloc failed";
+            return false;
+        }
+        g_infer_buffer_samples = infer_samples;
+    }
+
+    if (!g_infer_buffer_a || !g_infer_buffer_b || g_chunk_buffer_samples != chunk_samples) {
         if (g_infer_buffer_a) {
             free(g_infer_buffer_a);
             g_infer_buffer_a = nullptr;
         }
-        g_infer_buffer_a = (int16_t*)ps_malloc(infer_bytes);
-        if (!g_infer_buffer_a) {
-            if (g_infer_buffer_a) free(g_infer_buffer_a);
-            g_infer_buffer_a = nullptr;
-            if (err) *err = "Wake buffer alloc failed";
+        if (g_infer_buffer_b) {
+            free(g_infer_buffer_b);
+            g_infer_buffer_b = nullptr;
+        }
+        g_infer_buffer_a = (int16_t*)ps_malloc(chunk_bytes);
+        g_infer_buffer_b = (int16_t*)ps_malloc(chunk_bytes);
+        if (!g_infer_buffer_a || !g_infer_buffer_b) {
+            if (g_infer_buffer_a) {
+                free(g_infer_buffer_a);
+                g_infer_buffer_a = nullptr;
+            }
+            if (g_infer_buffer_b) {
+                free(g_infer_buffer_b);
+                g_infer_buffer_b = nullptr;
+            }
+            if (err) *err = "Wake chunk alloc failed";
             return false;
         }
-        g_infer_buffer_samples = infer_samples;
+        g_chunk_buffer_samples = chunk_samples;
     }
     return true;
 }
@@ -104,41 +131,47 @@ static void update_energy_metrics(const int16_t* samples, size_t sample_count, u
     peak_abs = peak;
 }
 
-static bool sample_gate_energy(uint32_t& avg_abs, uint32_t& peak_abs, String* detail = nullptr) {
-    const size_t gate_samples = (EI_CLASSIFIER_FREQUENCY * kGateChunkMs) / 1000;
-    const size_t gate_bytes = gate_samples * sizeof(int16_t);
-    if (!ensure_wake_buffer(gate_samples, detail)) return false;
-
-    size_t got = mic_record((uint8_t*)g_infer_buffer_a, gate_bytes, nullptr);
-    if (got != gate_bytes) {
-        if (detail) *detail = "Gate audio capture incomplete";
+static bool record_audio_chunk(int16_t* chunk_buffer, size_t chunk_samples,
+                               uint32_t& avg_abs, uint32_t& peak_abs,
+                               String* detail = nullptr) {
+    if (!chunk_buffer) {
+        if (detail) *detail = "Wake chunk buffer missing";
         return false;
     }
 
-    update_energy_metrics(g_infer_buffer_a, gate_samples, avg_abs, peak_abs);
-    g_last_energy = avg_abs;
-    g_last_peak = peak_abs;
+    const size_t chunk_bytes = chunk_samples * sizeof(int16_t);
+    size_t got = mic_record((uint8_t*)chunk_buffer, chunk_bytes, nullptr);
+    if (got != chunk_bytes) {
+        if (detail) *detail = "Wake chunk capture incomplete";
+        return false;
+    }
+
+    update_energy_metrics(chunk_buffer, chunk_samples, avg_abs, peak_abs);
     return true;
 }
 
-static bool run_wake_inference_window(String* detail = nullptr) {
+static bool run_wake_inference_window(const int16_t* first_chunk, size_t first_chunk_samples,
+                                      const int16_t* second_chunk, size_t second_chunk_samples,
+                                      String* detail = nullptr) {
     const size_t infer_samples = EI_CLASSIFIER_RAW_SAMPLE_COUNT;
-    const size_t infer_bytes = infer_samples * sizeof(int16_t);
-
-    if (!ensure_wake_buffer(infer_samples, detail)) return false;
-
-    size_t got = mic_record((uint8_t*)g_infer_buffer_a, infer_bytes, nullptr);
-    if (got != infer_bytes) {
-        if (detail) *detail = "Wake audio capture incomplete";
+    if (!g_infer_window_buffer || !first_chunk || !second_chunk) {
+        if (detail) *detail = "Wake window buffer missing";
+        return false;
+    }
+    if (first_chunk_samples + second_chunk_samples != infer_samples) {
+        if (detail) *detail = "Wake chunk/window mismatch";
         return false;
     }
 
+    memcpy(g_infer_window_buffer, first_chunk, first_chunk_samples * sizeof(int16_t));
+    memcpy(g_infer_window_buffer + first_chunk_samples, second_chunk,
+           second_chunk_samples * sizeof(int16_t));
+
     uint32_t avg_abs = 0;
     uint32_t peak_abs = 0;
-    update_energy_metrics(g_infer_buffer_a, infer_samples, avg_abs, peak_abs);
+    update_energy_metrics(g_infer_window_buffer, infer_samples, avg_abs, peak_abs);
     g_last_energy = avg_abs;
-    g_last_peak = peak_abs;
-    g_active_infer_buffer = g_infer_buffer_a;
+    g_active_infer_buffer = g_infer_window_buffer;
 
     signal_t signal;
     signal.total_length = infer_samples;
@@ -175,8 +208,8 @@ static bool run_wake_inference_window(String* detail = nullptr) {
                   " wake=" + String(wake_score, 3) +
                   " on=" + String(on_score, 3) +
                   " off=" + String(off_score, 3) +
-                  " energy=" + String(avg_abs) +
-                  " peak=" + String(peak_abs);
+                  " chunk_ms=" + String(kGateChunkMs) +
+                  " energy=" + String(avg_abs);
     }
 
     if (wake_score >= kWakeThreshold) {
@@ -188,10 +221,23 @@ static bool run_wake_inference_window(String* detail = nullptr) {
 static void wake_listener_task(void* pv) {
     (void)pv;
     g_wake_task_running = true;
-    debug_log_append("[Wake] Listener task started", "system");
-    uint8_t gate_hits = 0;
+    debug_log_printf("system", "[Wake] Listener task started, stride=%lu ms, overlap=%lu ms",
+                     (unsigned long)kGateChunkMs, (unsigned long)kGateChunkMs);
     unsigned long last_trigger_ms = 0;
     unsigned long last_heartbeat_ms = 0;
+    const size_t infer_samples = EI_CLASSIFIER_RAW_SAMPLE_COUNT;
+    const size_t chunk_samples = infer_samples / 2;
+    bool have_prev_chunk = false;
+
+    String init_detail;
+    if ((infer_samples % 2) != 0 || !ensure_wake_buffers(infer_samples, chunk_samples, &init_detail)) {
+        if ((infer_samples % 2) != 0) init_detail = "Wake model window must be even for sliding mode";
+        debug_log_append("[Wake] Listener init failed: " + init_detail, "system");
+        g_wake_task_running = false;
+        g_wake_task = nullptr;
+        vTaskDelete(NULL);
+        return;
+    }
 
     while (g_listener_enabled) {
         if (g_wake_detected) {
@@ -200,55 +246,51 @@ static void wake_listener_task(void* pv) {
         }
 
         uint32_t avg_abs = 0;
-        uint32_t peak_abs = 0;
-        String gate_detail;
-        if (!sample_gate_energy(avg_abs, peak_abs, &gate_detail)) {
-            debug_log_append("[Wake] Gate read failed: " + gate_detail, "system");
+        String chunk_detail;
+        uint32_t ignored_peak = 0;
+        if (!record_audio_chunk(g_infer_buffer_b, chunk_samples, avg_abs, ignored_peak, &chunk_detail)) {
+            debug_log_append("[Wake] Chunk read failed: " + chunk_detail, "system");
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
 
-        const bool gate_open = (avg_abs >= g_gate_threshold) ||
-                               (peak_abs >= (uint32_t)g_gate_threshold * 3UL);
-        gate_hits = gate_open ? (uint8_t)(gate_hits + 1) : 0;
+        g_last_energy = avg_abs;
 
         if (millis() - last_heartbeat_ms >= 1500) {
             last_heartbeat_ms = millis();
             debug_log_printf("system",
-                             "[Wake] gate energy=%lu peak=%lu threshold=%u hits=%u",
+                             "[Wake] sliding energy=%lu prev=%lu listener=%s",
                              (unsigned long)avg_abs,
-                             (unsigned long)peak_abs,
-                             (unsigned)g_gate_threshold,
-                             (unsigned)gate_hits);
+                             (unsigned long)g_prev_energy,
+                             g_listener_enabled ? "on" : "off");
         }
 
-        if (gate_hits < kGateHitRequired) {
-            vTaskDelay(pdMS_TO_TICKS(20));
-            continue;
+        if (have_prev_chunk && (millis() - last_trigger_ms >= kWakeInferenceCooldownMs)) {
+                last_trigger_ms = millis();
+
+                String infer_detail;
+                debug_log_printf("system",
+                                 "[Wake] Sliding infer start, prev=%lu curr=%lu",
+                                 (unsigned long)g_prev_energy,
+                                 (unsigned long)avg_abs);
+                if (!run_wake_inference_window(g_infer_buffer_a, chunk_samples,
+                                               g_infer_buffer_b, chunk_samples,
+                                               &infer_detail)) {
+                    debug_log_append("[Wake] Listener inference failed: " + infer_detail, "system");
+                    vTaskDelay(pdMS_TO_TICKS(120));
+                } else {
+                    debug_log_append("[Wake] " + infer_detail, "system");
+                    if (g_wake_detected) {
+                        debug_log_append("[Wake] Detected in background", "system");
+                    }
+                }
         }
 
-        if (millis() - last_trigger_ms < kGateCooldownMs) {
-            vTaskDelay(pdMS_TO_TICKS(40));
-            continue;
-        }
-        last_trigger_ms = millis();
-        gate_hits = 0;
+        memcpy(g_infer_buffer_a, g_infer_buffer_b, chunk_samples * sizeof(int16_t));
+        g_prev_energy = avg_abs;
+        have_prev_chunk = true;
 
-        String infer_detail;
-        debug_log_printf("system", "[Wake] Gate opened, start model window, energy=%lu peak=%lu",
-                         (unsigned long)avg_abs, (unsigned long)peak_abs);
-        if (!run_wake_inference_window(&infer_detail)) {
-            debug_log_append("[Wake] Listener inference failed: " + infer_detail, "system");
-            vTaskDelay(pdMS_TO_TICKS(120));
-            continue;
-        }
-
-        debug_log_append("[Wake] " + infer_detail, "system");
-        if (g_wake_detected) {
-            debug_log_append("[Wake] Detected in background", "system");
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(30));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     g_wake_task_running = false;
@@ -294,6 +336,7 @@ bool voice_init() {
     g_model_loaded = false;
     g_last_cmd = CMD_NONE;
     g_wake_detected = false;
+    g_prev_energy = 0;
 
 #ifdef HAS_EI_VOICE_MODEL
     if (!mic_init()) {
@@ -400,70 +443,36 @@ bool voice_run_wake_test(uint32_t timeout_ms, String& detail) {
     }
 
     const size_t infer_samples = EI_CLASSIFIER_RAW_SAMPLE_COUNT;
+    const size_t chunk_samples = infer_samples / 2;
     const uint32_t model_window_ms = (uint32_t)((infer_samples * 1000ULL) / EI_CLASSIFIER_FREQUENCY);
 
-    if (!g_infer_buffer_a || g_infer_buffer_samples != infer_samples) {
-        if (g_infer_buffer_a) {
-            free(g_infer_buffer_a);
-            g_infer_buffer_a = nullptr;
-        }
-        const size_t infer_bytes = infer_samples * sizeof(int16_t);
-        g_infer_buffer_a = (int16_t*)ps_malloc(infer_bytes);
-        if (!g_infer_buffer_a) {
-            detail = "Wake buffer alloc failed";
-            return false;
-        }
-        g_infer_buffer_samples = infer_samples;
+    if ((infer_samples % 2) != 0) {
+        detail = "Wake model window must be even for sliding mode";
+        return false;
     }
+    if (!ensure_wake_buffers(infer_samples, chunk_samples, &detail)) return false;
 
-    debug_log_printf("system", "[Wake] Capture start, requested=%lu ms, model=%lu ms, threshold=%.2f",
-                     timeout_ms, model_window_ms, kWakeThreshold);
-    size_t got = mic_record((uint8_t*)g_infer_buffer_a, infer_samples * sizeof(int16_t), nullptr);
-    if (got != infer_samples * sizeof(int16_t)) {
-        detail = "Wake audio capture incomplete";
+    debug_log_printf("system", "[Wake] Capture start, requested=%lu ms, model=%lu ms, stride=%lu ms, threshold=%.2f",
+                     timeout_ms, model_window_ms, (unsigned long)kGateChunkMs, kWakeThreshold);
+
+    uint32_t avg_a = 0;
+    uint32_t avg_b = 0;
+    uint32_t ignored_peak_a = 0;
+    uint32_t ignored_peak_b = 0;
+    if (!record_audio_chunk(g_infer_buffer_a, chunk_samples, avg_a, ignored_peak_a, &detail)) {
+        return false;
+    }
+    if (!record_audio_chunk(g_infer_buffer_b, chunk_samples, avg_b, ignored_peak_b, &detail)) {
         return false;
     }
 
-    signal_t signal;
-    signal.total_length = infer_samples;
-    g_active_infer_buffer = g_infer_buffer_a;
-    signal.get_data = &wake_signal_get_data;
+    g_prev_energy = avg_a;
+    g_last_energy = avg_b;
 
-    ei_impulse_result_t result = {0};
-    EI_IMPULSE_ERROR r = run_classifier(&signal, &result, false);
-    if (r != EI_IMPULSE_OK) {
-        detail = "Wake infer failed: " + String((int)r);
+    if (!run_wake_inference_window(g_infer_buffer_a, chunk_samples,
+                                   g_infer_buffer_b, chunk_samples, &detail)) {
         return false;
     }
-
-    size_t best_ix = 0;
-    float best_score = 0.0f;
-    float wake_score = 0.0f;
-    float on_score = 0.0f;
-    float off_score = 0.0f;
-    for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
-        const char* label = result.classification[ix].label;
-        const float score = result.classification[ix].value;
-        if (score > best_score) {
-            best_score = score;
-            best_ix = ix;
-        }
-        if (is_wake_label(label)) wake_score = score;
-        if (label && strcmp(label, kOnLabel) == 0) on_score = score;
-        if (label && strcmp(label, kOffLabel) == 0) off_score = score;
-    }
-
-    const char* best_label = result.classification[best_ix].label;
-    detail = String("top=") + (best_label ? best_label : "?") +
-             " score=" + String(best_score, 3) +
-             " wake=" + String(wake_score, 3) +
-             " on=" + String(on_score, 3) +
-             " off=" + String(off_score, 3) +
-             " energy=" + String(g_last_energy) +
-             " peak=" + String(g_last_peak);
-    const bool infer_ok = true;
-    if (wake_score >= kWakeThreshold) g_wake_detected = true;
-    if (!infer_ok) return false;
     if (g_wake_detected) return true;
     detail = "No wake detected, " + detail;
     return false;
@@ -518,35 +527,9 @@ bool voice_listener_enabled() {
     return g_listener_enabled;
 }
 
-void voice_set_gate_threshold(uint16_t threshold) {
-#ifdef HAS_EI_VOICE_MODEL
-    if (threshold < 200) threshold = 200;
-    if (threshold > 12000) threshold = 12000;
-    g_gate_threshold = threshold;
-#else
-    (void)threshold;
-#endif
-}
-
-uint16_t voice_gate_threshold() {
-#ifdef HAS_EI_VOICE_MODEL
-    return g_gate_threshold;
-#else
-    return 0;
-#endif
-}
-
 uint32_t voice_last_energy_level() {
 #ifdef HAS_EI_VOICE_MODEL
     return g_last_energy;
-#else
-    return 0;
-#endif
-}
-
-uint32_t voice_last_peak_level() {
-#ifdef HAS_EI_VOICE_MODEL
-    return g_last_peak;
 #else
     return 0;
 #endif

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Otto Desktop Debug Panel</title>
+<title>Otto Host Control Panel</title>
 <style>
   :root {
     --bg: #081019;
@@ -24,6 +24,7 @@
   }
 
   * { box-sizing: border-box; }
+
   body {
     margin: 0;
     min-height: 100vh;
@@ -36,7 +37,7 @@
   }
 
   .shell {
-    max-width: 1240px;
+    max-width: 1300px;
     margin: 0 auto;
     padding: 22px;
   }
@@ -62,6 +63,13 @@
     font-family: var(--mono);
     text-transform: uppercase;
     letter-spacing: 1px;
+  }
+
+  .pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: flex-end;
   }
 
   .status-pill {
@@ -95,6 +103,11 @@
     gap: 16px;
   }
 
+  .stack {
+    display: grid;
+    gap: 16px;
+  }
+
   .card {
     background: rgba(15, 24, 36, 0.92);
     border: 1px solid var(--line);
@@ -112,10 +125,23 @@
     letter-spacing: 1.4px;
   }
 
-  .config-row {
+  .config-grid {
     display: grid;
-    grid-template-columns: 1fr auto auto;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
+  }
+
+  .field {
+    display: grid;
+    gap: 7px;
+  }
+
+  .field label {
+    color: var(--muted);
+    font-size: 11px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 1px;
   }
 
   input[type="text"] {
@@ -127,6 +153,20 @@
     color: var(--text);
     background: var(--panel-2);
     font: 14px var(--mono);
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 92px;
+    resize: vertical;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    outline: none;
+    color: var(--text);
+    background: var(--panel-2);
+    font: 14px var(--ui);
+    line-height: 1.6;
   }
 
   button {
@@ -148,6 +188,23 @@
   button.primary {
     background: linear-gradient(135deg, rgba(228,167,77,0.18), rgba(228,167,77,0.08));
     border-color: rgba(228,167,77,0.32);
+  }
+
+  button.good {
+    background: linear-gradient(135deg, rgba(124,196,134,0.18), rgba(124,196,134,0.08));
+    border-color: rgba(124,196,134,0.32);
+  }
+
+  button.warn {
+    background: linear-gradient(135deg, rgba(209,102,102,0.18), rgba(209,102,102,0.08));
+    border-color: rgba(209,102,102,0.32);
+  }
+
+  .button-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
   }
 
   .hint {
@@ -224,7 +281,7 @@
 
   .controls button {
     text-align: left;
-    min-height: 50px;
+    min-height: 52px;
   }
 
   .controls button span {
@@ -234,31 +291,8 @@
     margin-top: 3px;
   }
 
-  .slider-row {
-    margin-top: 14px;
-    background: var(--panel-2);
-    border-radius: 12px;
-    padding: 12px;
-  }
-
-  .slider-meta {
-    display: flex;
-    justify-content: space-between;
-    color: var(--muted);
-    font-size: 12px;
-    margin-bottom: 8px;
-  }
-
-  input[type="range"] {
-    width: 100%;
-  }
-
-  .log-card {
-    margin-top: 16px;
-  }
-
   .log {
-    max-height: 340px;
+    max-height: 360px;
     overflow: auto;
     background: #0b121b;
     border-radius: 12px;
@@ -294,15 +328,21 @@
     line-height: 1.6;
   }
 
-  @media (max-width: 900px) {
-    .grid {
+  @media (max-width: 980px) {
+    .grid,
+    .config-grid,
+    .kv-grid,
+    .controls {
       grid-template-columns: 1fr;
     }
-    .config-row {
-      grid-template-columns: 1fr;
+
+    .topbar {
+      flex-direction: column;
+      align-items: flex-start;
     }
-    .kv-grid, .controls {
-      grid-template-columns: 1fr;
+
+    .pill-row {
+      justify-content: flex-start;
     }
   }
 </style>
@@ -311,73 +351,122 @@
 <div class="shell">
   <div class="topbar">
     <div class="brand">
-      <h1>Otto Desktop Debug Panel</h1>
-      <p>Desktop-hosted panel · HTTP polling · ESP32 API-only mode</p>
+      <h1>Otto Host Control Panel</h1>
+      <p>Host-enhanced mode · Desktop web UI · No serial required</p>
     </div>
-    <div class="status-pill">
-      <span class="dot" id="connDot"></span>
-      <span id="connText">未连接</span>
+    <div class="pill-row">
+      <div class="status-pill">
+        <span class="dot" id="hostDot"></span>
+        <span id="hostText">主机服务未连接</span>
+      </div>
+      <div class="status-pill">
+        <span class="dot" id="espDot"></span>
+        <span id="espText">ESP32 未连接</span>
+      </div>
+      <div class="status-pill">
+        <span class="dot" id="modeDot"></span>
+        <span id="modeText">Standalone</span>
+      </div>
     </div>
   </div>
 
   <div class="grid">
-    <div>
+    <div class="stack">
       <div class="card">
         <h2>Connection</h2>
-        <div class="config-row">
-          <input id="espBaseUrl" type="text" placeholder="http://192.168.1.123">
-          <button class="primary" id="saveBtn">保存地址</button>
+        <div class="config-grid">
+          <div class="field">
+            <label for="hostApiBase">Host API Base</label>
+            <input id="hostApiBase" type="text" placeholder="http://127.0.0.1:9000">
+          </div>
+          <div class="field">
+            <label for="hostAccessIp">Host LAN IP</label>
+            <input id="hostAccessIp" type="text" placeholder="192.168.1.50">
+          </div>
+          <div class="field">
+            <label for="espBaseUrl">ESP32 Base URL</label>
+            <input id="espBaseUrl" type="text" placeholder="http://192.168.1.123">
+          </div>
+        </div>
+        <div class="button-row">
+          <button class="primary" id="saveBtn">保存配置</button>
           <button id="refreshBtn">立即刷新</button>
+          <button class="good" id="claimBtn">进入主机增强</button>
+          <button class="warn" id="releaseBtn">切回独立模式</button>
         </div>
         <div class="hint">
-          这里填写 ESP32 的局域网地址。页面运行在电脑上，只通过 HTTP 请求开发板的 `/api/status` 和 `/api/action`。
+          `Host API Base` 用于当前网页访问主机服务。`Host LAN IP` 必须填写电脑在局域网中的真实地址，不能使用 `127.0.0.1`，因为 ESP32 需要通过这个地址把录音上传给主机服务。
         </div>
       </div>
 
-      <div class="card" style="margin-top:16px">
-        <h2>System Status</h2>
+      <div class="card">
+        <h2>Host Service</h2>
+        <div class="kv-grid">
+          <div class="kv"><div class="k">Service Mode</div><div class="v" id="hostModeText">-</div></div>
+          <div class="kv"><div class="k">Qwen Config</div><div class="v" id="hostQwenText">-</div></div>
+          <div class="kv"><div class="k">Voice Model</div><div class="v" id="hostVoiceModelText">-</div></div>
+          <div class="kv"><div class="k">Image Model</div><div class="v" id="hostImageModelText">-</div></div>
+          <div class="kv"><div class="k">TTS Endpoint</div><div class="v" id="hostTtsEndpointText">-</div></div>
+          <div class="kv"><div class="k">TTS Voice</div><div class="v" id="hostTtsVoiceText">-</div></div>
+          <div class="kv"><div class="k">TTS Format</div><div class="v" id="hostTtsFormatText">-</div></div>
+        </div>
+        <div class="button-row">
+          <button id="hostHealthBtn">刷新主机健康</button>
+          <button id="hostConnectivityBtn">Qwen 联通性测试</button>
+          <button id="hostSampleBtn">官方样例 ASR</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Voice Reply</h2>
+        <div class="kv-grid">
+          <div class="kv"><div class="k">Reply ID</div><div class="v" id="replyIdText">-</div></div>
+          <div class="kv"><div class="k">Audio State</div><div class="v" id="replyAudioStateText">-</div></div>
+          <div class="kv"><div class="k">Transcript</div><div class="v" id="replyTranscriptText">-</div></div>
+          <div class="kv"><div class="k">Answer</div><div class="v" id="replyAnswerText">-</div></div>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <label for="ttsTestInput">Text Reply Test</label>
+          <textarea id="ttsTestInput" placeholder="例如：你好，请做个自我介绍。"></textarea>
+        </div>
+        <div class="button-row">
+          <button class="primary" id="ttsTestBtn">生成并播放测试语音</button>
+          <button id="playLatestBtn">播放最新语音</button>
+        </div>
+        <audio id="replyAudio" controls preload="none" style="width:100%;margin-top:12px"></audio>
+      </div>
+
+      <div class="card">
+        <h2>ESP32 Status</h2>
         <div class="kv-grid">
           <div class="kv"><div class="k">ESP32 IP</div><div class="v" id="ipText">-</div></div>
           <div class="kv"><div class="k">Uptime</div><div class="v" id="uptimeText">-</div></div>
-          <div class="kv"><div class="k">Last Result</div><div class="v" id="lastResultText">-</div></div>
+          <div class="kv"><div class="k">Runtime Mode</div><div class="v" id="runtimeModeText">-</div></div>
+          <div class="kv"><div class="k">Voice Stage</div><div class="v" id="voiceStageText">-</div></div>
+          <div class="kv"><div class="k">Host Claim</div><div class="v" id="hostClaimText">-</div></div>
+          <div class="kv"><div class="k">Host Server IP</div><div class="v" id="hostServerIpText">-</div></div>
           <div class="kv"><div class="k">Face</div><div class="v" id="faceText">-</div></div>
           <div class="kv"><div class="k">Person</div><div class="v" id="personText">-</div></div>
           <div class="kv"><div class="k">Qwen</div><div class="v" id="qwenText">-</div></div>
           <div class="kv"><div class="k">Ultrasonic</div><div class="v" id="ultrasonicText">-</div></div>
-          <div class="kv"><div class="k">Ultrasonic Read</div><div class="v" id="ultrasonicReadText">-</div></div>
-          <div class="kv"><div class="k">Wake Gate</div><div class="v" id="wakeGateText">-</div></div>
-          <div class="kv"><div class="k">Wake Peak</div><div class="v" id="wakePeakText">-</div></div>
+          <div class="kv"><div class="k">Wake Listen</div><div class="v" id="wakeGateText">-</div></div>
+          <div class="kv"><div class="k">Last Result</div><div class="v" id="lastResultText">-</div></div>
         </div>
 
         <div class="device-list">
           <div class="device"><span>台灯</span><span class="badge" id="lightBadge">关</span></div>
           <div class="device"><span>音响</span><span class="badge" id="speakerBadge">关</span></div>
         </div>
-
-        <div class="slider-row">
-          <div class="slider-meta">
-            <span>Wake Threshold</span>
-            <span id="wakeThresholdValue">1800</span>
-          </div>
-          <input id="wakeThreshold" type="range" min="200" max="12000" step="100" value="1800">
-          <div style="margin-top:10px">
-            <button id="applyThresholdBtn">应用阈值</button>
-          </div>
-        </div>
       </div>
     </div>
 
-    <div>
+    <div class="stack">
       <div class="card">
         <h2>Quick Actions</h2>
         <div class="controls" id="controls">
           <button data-cmd="ping">Ping<span>连通性测试</span></button>
           <button data-cmd="wifi_status">WiFi 状态<span>查看联网状态</span></button>
-          <button data-cmd="mic_diag">麦克风诊断<span>PDM 输入检查</span></button>
-          <button data-cmd="screen_demo">屏幕测试<span>TFT 图案显示</span></button>
           <button data-cmd="qwen_status">Qwen 状态<span>检查云端配置</span></button>
-          <button data-cmd="qwen_recognize">Qwen 识别<span>拍照并做人脸判定</span></button>
-          <button data-cmd="qwen_voice_test">Qwen 语音测试<span>录音后上云识别</span></button>
           <button data-cmd="qwen_voice_sample">官方样例语音<span>验证 ASR 接口</span></button>
           <button data-cmd="wake_test">本地唤醒测试<span>单次本地模型验证</span></button>
           <button data-cmd="ultrasonic_test">测距测试<span>立即读取一次距离</span></button>
@@ -386,29 +475,20 @@
           <button data-cmd="audio_test_off">应答音 关<span>测试 light_off.wav</span></button>
           <button data-cmd="light_on">台灯开启<span>直接下发开灯</span></button>
           <button data-cmd="light_off">台灯关闭<span>直接下发关灯</span></button>
-          <button data-cmd="sleep_deep">深度睡眠<span>关闭 WiFi 与高耗能外设</span></button>
           <button data-cmd="face_idle">待机表情<span>切换到 idle</span></button>
           <button data-cmd="face_listening">倾听表情<span>切换到 listening</span></button>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:16px">
-        <h2>Servo Tests</h2>
-        <div class="controls" id="servoControls">
           <button data-cmd="servo180_0">180° 舵机 0°<span>GPIO4</span></button>
           <button data-cmd="servo180_90">180° 舵机 90°<span>GPIO4</span></button>
           <button data-cmd="servo180_180">180° 舵机 180°<span>GPIO4</span></button>
-          <button data-cmd="servo360_rev">360° 反转<span>GPIO8</span></button>
-          <button data-cmd="servo360_stop">360° 停止<span>GPIO8</span></button>
-          <button data-cmd="servo360_fwd">360° 正转<span>GPIO8</span></button>
+          <button data-cmd="sleep_deep">深度睡眠<span>关闭高耗能外设</span></button>
         </div>
       </div>
 
-      <div class="card log-card">
+      <div class="card">
         <h2>Debug Log</h2>
         <div class="log" id="logBox"></div>
         <div class="footer-note">
-          页面不会连接板端 WebSocket，也不会请求视频流。它只定时拉取状态，适合开发板长期独立运行时的轻量调试。
+          这个页面运行在主机上，负责观察主机服务与 ESP32 的协同状态。开发板仍保留独立运行能力，但在需要演示时，可以由这里切换到主机增强模式。
         </div>
       </div>
     </div>
@@ -416,7 +496,10 @@
 </div>
 
 <script>
-const STORAGE_KEY = 'otto_esp32_base_url';
+const STORAGE_HOST_API = 'otto_host_api_base';
+const STORAGE_HOST_IP = 'otto_host_access_ip';
+const STORAGE_ESP_URL = 'otto_esp32_base_url';
+
 const FACE_NAMES = {
   0: 'happy',
   1: 'idle',
@@ -425,10 +508,11 @@ const FACE_NAMES = {
   4: 'confused'
 };
 
-let baseUrl = '';
 let lastDebugLog = '';
 let lastBootId = null;
 let pollTimer = null;
+let lastReplyId = '';
+let audioUnlocked = false;
 
 function nowText() {
   return new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -442,7 +526,7 @@ function addLog(message) {
   row.querySelector('.m').textContent = message;
   const logBox = document.getElementById('logBox');
   logBox.appendChild(row);
-  while (logBox.children.length > 220) {
+  while (logBox.children.length > 240) {
     logBox.removeChild(logBox.firstChild);
   }
   logBox.scrollTop = logBox.scrollHeight;
@@ -456,10 +540,9 @@ function normalizeBaseUrl(url) {
   return (url || '').trim().replace(/\/+$/, '');
 }
 
-function setConnection(ok, text) {
-  const dot = document.getElementById('connDot');
-  dot.classList.toggle('ok', !!ok);
-  document.getElementById('connText').textContent = text || (ok ? '已连接' : '未连接');
+function setPill(dotId, textId, ok, text) {
+  document.getElementById(dotId).classList.toggle('ok', !!ok);
+  document.getElementById(textId).textContent = text;
 }
 
 function setBadge(id, on) {
@@ -468,56 +551,65 @@ function setBadge(id, on) {
   el.classList.toggle('on', !!on);
 }
 
-function updateStatus(data) {
-  document.getElementById('ipText').textContent = data.ip || '-';
-  document.getElementById('uptimeText').textContent = `${data.uptime_s || 0} s`;
-  document.getElementById('lastResultText').textContent = data.last_result || '-';
-  document.getElementById('faceText').textContent = FACE_NAMES[data.face] || String(data.face ?? '-');
-  document.getElementById('personText').textContent = data.person ? '检测到人' : '未检测到人';
-  document.getElementById('qwenText').textContent = data.qwen || '-';
-  document.getElementById('ultrasonicText').textContent = data.ultrasonic_ready
-    ? `${Number(data.ultrasonic_distance_cm ?? -1).toFixed(1)} cm`
-    : '未初始化';
-  document.getElementById('ultrasonicReadText').textContent = data.ultrasonic_ready
-    ? (data.ultrasonic_ok ? '读取成功' : '读取超时')
-    : '未初始化';
-  document.getElementById('wakeGateText').textContent =
-    `${data.wake_energy || 0} / 阈值 ${data.wake_threshold || 0}${data.wake_listener ? ' · 监听中' : ' · 未监听'}`;
-  document.getElementById('wakePeakText').textContent = String(data.wake_peak || 0);
-
-  setBadge('lightBadge', data.light);
-  setBadge('speakerBadge', data.speaker);
-
-  const slider = document.getElementById('wakeThreshold');
-  const valueText = document.getElementById('wakeThresholdValue');
-  if (data.wake_threshold && document.activeElement !== slider) {
-    slider.value = data.wake_threshold;
-    valueText.textContent = data.wake_threshold;
-  }
-
-  if (data.boot_id !== undefined && data.boot_id !== lastBootId) {
-    lastBootId = data.boot_id;
-    lastDebugLog = '';
-    clearLog();
-    addLog(`[Panel] 检测到设备重启，boot_id=${data.boot_id}`);
-  }
-
-  if (typeof data.debug_log === 'string') {
-    if (!lastDebugLog || !data.debug_log.startsWith(lastDebugLog)) {
-      clearLog();
-      data.debug_log.split('\n').map(x => x.trim()).filter(Boolean).forEach(addLog);
-    } else {
-      data.debug_log.slice(lastDebugLog.length).split('\n').map(x => x.trim()).filter(Boolean).forEach(addLog);
-    }
-    lastDebugLog = data.debug_log;
-  }
+function getHostApiBase() {
+  return normalizeBaseUrl(document.getElementById('hostApiBase').value);
 }
 
-async function apiFetch(path, options = {}) {
-  if (!baseUrl) {
-    throw new Error('请先填写 ESP32 地址');
+function getHostAccessIp() {
+  return (document.getElementById('hostAccessIp').value || '').trim();
+}
+
+function getEspBaseUrl() {
+  return normalizeBaseUrl(document.getElementById('espBaseUrl').value);
+}
+
+function saveConfig() {
+  localStorage.setItem(STORAGE_HOST_API, getHostApiBase());
+  localStorage.setItem(STORAGE_HOST_IP, getHostAccessIp());
+  localStorage.setItem(STORAGE_ESP_URL, getEspBaseUrl());
+  addLog('[Panel] 配置已保存');
+}
+
+function loadConfig() {
+  const defaultHostApi = window.location.origin && window.location.origin !== 'null'
+    ? window.location.origin
+    : 'http://127.0.0.1:9000';
+
+  document.getElementById('hostApiBase').value =
+    localStorage.getItem(STORAGE_HOST_API) || defaultHostApi;
+  document.getElementById('hostAccessIp').value =
+    localStorage.getItem(STORAGE_HOST_IP) || '';
+  document.getElementById('espBaseUrl').value =
+    localStorage.getItem(STORAGE_ESP_URL) || '';
+}
+
+async function hostFetch(path, options = {}) {
+  const hostApiBase = getHostApiBase();
+  if (!hostApiBase) {
+    throw new Error('请先填写 Host API Base');
   }
-  const response = await fetch(`${baseUrl}${path}`, {
+  const response = await fetch(`${hostApiBase}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  const raw = await response.text();
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+  if (!response.ok) {
+    throw new Error((data && (data.error || data.detail || data.message)) || raw || `HTTP ${response.status}`);
+  }
+  return data;
+}
+
+async function boardFetch(path, options = {}) {
+  const espBaseUrl = getEspBaseUrl();
+  if (!espBaseUrl) {
+    throw new Error('请先填写 ESP32 Base URL');
+  }
+  const response = await fetch(`${espBaseUrl}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -533,70 +625,268 @@ async function apiFetch(path, options = {}) {
   return data;
 }
 
-async function refreshStatus() {
-  try {
-    const data = await apiFetch('/api/status');
-    setConnection(true, `已连接 · ${baseUrl}`);
-    updateStatus(data);
-  } catch (error) {
-    setConnection(false, `连接失败 · ${error.message}`);
+function updateHostHealth(data) {
+  setPill('hostDot', 'hostText', !!data.ok, data.ok ? `主机服务在线 · ${data.mode || 'unknown'}` : '主机服务异常');
+  document.getElementById('hostModeText').textContent = data.mode || '-';
+  document.getElementById('hostQwenText').textContent = data.qwen_configured ? 'configured' : 'missing';
+  document.getElementById('hostVoiceModelText').textContent = data.voice_model || '-';
+  document.getElementById('hostImageModelText').textContent = data.image_model || '-';
+  document.getElementById('hostTtsEndpointText').textContent = data.tts_chat_url || '-';
+  document.getElementById('hostTtsVoiceText').textContent = data.tts_voice || '-';
+  document.getElementById('hostTtsFormatText').textContent = data.tts_format || '-';
+}
+
+function updateHostRuntime(runtime) {
+  const current = runtime || {};
+  document.getElementById('replyIdText').textContent = current.reply_id || '-';
+  document.getElementById('replyAudioStateText').textContent = current.tts_available
+    ? `ready · ${current.tts_mime || 'audio/wav'}`
+    : 'no audio';
+  document.getElementById('replyTranscriptText').textContent = current.transcript || '-';
+  document.getElementById('replyAnswerText').textContent = current.answer || '-';
+}
+
+async function playLatestAudio(runtime, autoPlay = false) {
+  if (!runtime || !runtime.reply_id || !runtime.tts_available) return;
+  const audio = document.getElementById('replyAudio');
+  const hostApiBase = getHostApiBase();
+  audio.src = `${hostApiBase}/api/voice/audio/latest.wav?id=${encodeURIComponent(runtime.reply_id)}`;
+  audio.load();
+  if (autoPlay) {
+    try {
+      await audio.play();
+      addLog(`[Host] 已播放语音回复 ${runtime.reply_id}`);
+    } catch (error) {
+      addLog(`[Host] 浏览器阻止自动播放，请手动点击“播放最新语音” · ${error.message || 'autoplay blocked'}`);
+    }
   }
 }
 
-async function runCommand(cmd) {
+async function refreshHostRuntime() {
   try {
-    const data = await apiFetch(`/api/action?cmd=${encodeURIComponent(cmd)}`, {
-      method: 'POST'
+    const data = await hostFetch('/api/runtime/status');
+    const runtime = data.runtime || {};
+    updateHostRuntime(runtime);
+    if (runtime.reply_id && runtime.reply_id !== lastReplyId) {
+      lastReplyId = runtime.reply_id;
+      addLog(`[Host] 收到新的语音回复 ${runtime.reply_id}`);
+      if (runtime.tts_available && audioUnlocked) {
+        await playLatestAudio(runtime, true);
+      }
+    }
+    return runtime;
+  } catch (error) {
+    updateHostRuntime({});
+    throw error;
+  }
+}
+
+function updateBoardStatus(data) {
+  setPill('espDot', 'espText', true, `ESP32 已连接 · ${getEspBaseUrl()}`);
+  const isHostMode = data.runtime_mode === 'host_enhanced';
+  setPill('modeDot', 'modeText', isHostMode, isHostMode ? 'Host Enhanced' : 'Standalone');
+
+  document.getElementById('ipText').textContent = data.ip || '-';
+  document.getElementById('uptimeText').textContent = `${data.uptime_s || 0} s`;
+  document.getElementById('runtimeModeText').textContent = data.runtime_mode || '-';
+  document.getElementById('voiceStageText').textContent = data.voice_stage || '-';
+  document.getElementById('hostClaimText').textContent = data.host_claimed ? 'claimed' : 'released';
+  document.getElementById('hostServerIpText').textContent = data.host_server_ip || '-';
+  document.getElementById('faceText').textContent = FACE_NAMES[data.face] || String(data.face ?? '-');
+  document.getElementById('personText').textContent = data.person ? '检测到人' : '未检测到人';
+  document.getElementById('qwenText').textContent = data.qwen || '-';
+  document.getElementById('ultrasonicText').textContent = data.ultrasonic_ready
+    ? `${Number(data.ultrasonic_distance_cm ?? -1).toFixed(1)} cm${data.ultrasonic_ok ? '' : ' · timeout'}`
+    : '未初始化';
+  document.getElementById('wakeGateText').textContent =
+    `${data.wake_energy || 0}${data.wake_listener ? ' · 监听中' : ' · 未监听'}`;
+  document.getElementById('lastResultText').textContent = data.last_result || '-';
+
+  setBadge('lightBadge', data.light);
+  setBadge('speakerBadge', data.speaker);
+
+  if (data.boot_id !== undefined && data.boot_id !== lastBootId) {
+    lastBootId = data.boot_id;
+    lastDebugLog = '';
+    clearLog();
+    addLog(`[Panel] 检测到设备重启，boot_id=${data.boot_id}`);
+  }
+
+  if (typeof data.debug_log === 'string') {
+    if (!lastDebugLog || !data.debug_log.startsWith(lastDebugLog)) {
+      clearLog();
+      data.debug_log.split('\n').map(line => line.trim()).filter(Boolean).forEach(addLog);
+    } else {
+      data.debug_log
+        .slice(lastDebugLog.length)
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .forEach(addLog);
+    }
+    lastDebugLog = data.debug_log;
+  }
+}
+
+async function refreshHostHealth() {
+  try {
+    const data = await hostFetch('/healthz');
+    updateHostHealth(data);
+    return data;
+  } catch (error) {
+    setPill('hostDot', 'hostText', false, error.message || '主机服务未连接');
+    throw error;
+  }
+}
+
+async function refreshBoardStatus() {
+  try {
+    const data = await boardFetch('/api/status');
+    updateBoardStatus(data);
+    return data;
+  } catch (error) {
+    setPill('espDot', 'espText', false, error.message || 'ESP32 未连接');
+    setPill('modeDot', 'modeText', false, 'Unknown');
+    throw error;
+  }
+}
+
+async function refreshAll() {
+  const tasks = [refreshHostHealth(), refreshHostRuntime(), refreshBoardStatus()];
+  await Promise.allSettled(tasks);
+}
+
+async function runBoardCommand(cmd, label) {
+  try {
+    const data = await boardFetch(`/api/action?cmd=${encodeURIComponent(cmd)}`, { method: 'POST' });
+    addLog(`${label} · ${(data && data.message) || 'OK'}`);
+    await refreshBoardStatus();
+  } catch (error) {
+    addLog(`${label} · ${error.message || 'HTTP 命令失败'}`);
+  }
+}
+
+async function claimHostMode() {
+  const hostIp = getHostAccessIp();
+  if (!hostIp) {
+    addLog('[Host] 请先填写 Host LAN IP');
+    return;
+  }
+  if (hostIp === '127.0.0.1' || hostIp === 'localhost') {
+    addLog('[Host] Host LAN IP 不能使用 127.0.0.1 或 localhost');
+    return;
+  }
+  await runBoardCommand(`host_mode_host:${hostIp}`, '进入主机增强');
+}
+
+async function releaseHostMode() {
+  await runBoardCommand('host_mode_standalone', '切回独立模式');
+}
+
+async function runHostConnectivity() {
+  try {
+    const data = await hostFetch('/api/qwen/test/connectivity', { method: 'POST' });
+    const planner = data.planner && data.planner.action_text ? data.planner.action_text : '-';
+    addLog(`[Host] 联通性测试成功 · ASR=${data.voice && data.voice.transcript ? data.voice.transcript : '-'} · Planner=${planner}`);
+    await refreshHostHealth();
+  } catch (error) {
+    addLog(`[Host] 联通性测试失败 · ${error.message || 'unknown error'}`);
+  }
+}
+
+async function runHostSampleAsr() {
+  try {
+    const data = await hostFetch('/api/qwen/test/sample-asr', { method: 'POST' });
+    addLog(`[Host] 官方样例 ASR · ${data.transcript || '-'}`);
+  } catch (error) {
+    addLog(`[Host] 官方样例 ASR 失败 · ${error.message || 'unknown error'}`);
+  }
+}
+
+async function runHostReplyTest() {
+  const transcript = (document.getElementById('ttsTestInput').value || '').trim();
+  if (!transcript) {
+    addLog('[Host] 请先输入测试文本');
+    return;
+  }
+  try {
+    audioUnlocked = true;
+    const data = await hostFetch('/api/qwen/test/reply', {
+      method: 'POST',
+      body: JSON.stringify({ transcript })
     });
-    addLog(`${cmd} · ${data && data.message ? data.message : 'OK'}`);
-    await refreshStatus();
+    const runtime = data.runtime || {};
+    updateHostRuntime(runtime);
+    lastReplyId = runtime.reply_id || lastReplyId;
+    addLog(`[Host] 测试回复完成 · ${runtime.answer || transcript}`);
+    if (runtime.tts_available) {
+      await playLatestAudio(runtime, true);
+    }
   } catch (error) {
-    addLog(`${cmd} · ${error.message}`);
+    addLog(`[Host] 测试回复失败 · ${error.message || 'unknown error'}`);
   }
 }
 
-function saveBaseUrl() {
-  const input = document.getElementById('espBaseUrl');
-  baseUrl = normalizeBaseUrl(input.value);
-  localStorage.setItem(STORAGE_KEY, baseUrl);
-  if (baseUrl) {
-    addLog(`[Panel] 已保存 ESP32 地址: ${baseUrl}`);
-    refreshStatus();
+async function replayLatestAudio() {
+  audioUnlocked = true;
+  try {
+    const data = await hostFetch('/api/runtime/status');
+    const runtime = data.runtime || {};
+    if (!runtime.reply_id || !runtime.tts_available) {
+      addLog('[Host] 当前没有可播放的语音');
+      return;
+    }
+    await playLatestAudio(runtime, true);
+  } catch (error) {
+    addLog(`[Host] 播放失败 · ${error.message || 'unknown error'}`);
   }
 }
 
-function loadBaseUrl() {
-  const fromQuery = new URLSearchParams(window.location.search).get('esp');
-  const saved = fromQuery || localStorage.getItem(STORAGE_KEY) || 'http://192.168.1.123';
-  baseUrl = normalizeBaseUrl(saved);
-  document.getElementById('espBaseUrl').value = baseUrl;
-}
+function bindEvents() {
+  document.getElementById('saveBtn').addEventListener('click', () => {
+    audioUnlocked = true;
+    saveConfig();
+    refreshAll();
+  });
+  document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+  document.getElementById('claimBtn').addEventListener('click', () => {
+    audioUnlocked = true;
+    claimHostMode();
+  });
+  document.getElementById('releaseBtn').addEventListener('click', () => {
+    audioUnlocked = true;
+    releaseHostMode();
+  });
+  document.getElementById('hostHealthBtn').addEventListener('click', refreshHostHealth);
+  document.getElementById('hostConnectivityBtn').addEventListener('click', runHostConnectivity);
+  document.getElementById('hostSampleBtn').addEventListener('click', runHostSampleAsr);
+  document.getElementById('ttsTestBtn').addEventListener('click', runHostReplyTest);
+  document.getElementById('playLatestBtn').addEventListener('click', replayLatestAudio);
+  document.getElementById('replyAudio').addEventListener('play', () => {
+    audioUnlocked = true;
+  });
 
-document.getElementById('saveBtn').addEventListener('click', saveBaseUrl);
-document.getElementById('refreshBtn').addEventListener('click', refreshStatus);
-document.getElementById('applyThresholdBtn').addEventListener('click', () => {
-  runCommand(`wake_threshold:${document.getElementById('wakeThreshold').value}`);
-});
-document.getElementById('wakeThreshold').addEventListener('input', (e) => {
-  document.getElementById('wakeThresholdValue').textContent = e.target.value;
-});
-
-function bindCommandPanel(panelId) {
-  const panel = document.getElementById(panelId);
-  if (!panel) return;
-  panel.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-cmd]');
-    if (!button) return;
-    runCommand(button.dataset.cmd);
+  document.querySelectorAll('#controls button[data-cmd]').forEach(button => {
+    button.addEventListener('click', () => {
+      audioUnlocked = true;
+      const cmd = button.dataset.cmd;
+      const label = button.childNodes[0] && button.childNodes[0].textContent
+        ? button.childNodes[0].textContent.trim()
+        : button.textContent.trim();
+      runBoardCommand(cmd, label);
+    });
   });
 }
 
-bindCommandPanel('controls');
-bindCommandPanel('servoControls');
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(refreshAll, 2000);
+}
 
-loadBaseUrl();
-refreshStatus();
-pollTimer = setInterval(refreshStatus, 1000);
+loadConfig();
+bindEvents();
+refreshAll();
+startPolling();
 </script>
 </body>
 </html>

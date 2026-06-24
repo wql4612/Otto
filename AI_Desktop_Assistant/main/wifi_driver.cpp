@@ -30,6 +30,7 @@ namespace {
 
 WebServer g_server(80);
 bool g_server_started = false;
+String g_last_ws_remote_ip = "";
 
 String g_device_label = "ai-desktop-assistant";
 WifiCommandHandler   g_cmd_handler = nullptr;
@@ -68,8 +69,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;color:#bdd0e5}.hint{font
 <div class="kv"><div class="k">Uptime</div><div class="v" id="uptime">-</div></div>
 <div class="kv"><div class="k">Last Result</div><div class="v" id="lastResult">-</div></div>
 <div class="kv"><div class="k">Person</div><div class="v" id="person">-</div></div>
-<div class="kv"><div class="k">Wake Gate</div><div class="v" id="wakeGate">-</div></div>
-<div class="kv"><div class="k">Wake Peak</div><div class="v" id="wakePeak">-</div></div>
+<div class="kv"><div class="k">Wake Listen</div><div class="v" id="wakeGate">-</div></div>
 </div>
 <div class="devices">
 <div class="dev"><span>台灯</span><span class="state" id="lightState">关</span></div>
@@ -77,7 +77,6 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;color:#bdd0e5}.hint{font
 <div class="dev"><span>音响</span><span class="state" id="speakerState">关</span></div>
 </div>
 <div class="hint">页面只用于日志输出和小测试，不依赖 WebSocket。</div>
-<div class="hint">Wake 阈值: <input id="wakeThreshold" type="range" min="200" max="12000" step="100" value="1800" oninput="document.getElementById('wakeThresholdValue').textContent=this.value"> <span id="wakeThresholdValue">1800</span> <button onclick="applyWakeThreshold()">应用阈值</button></div>
 </div>
 <div class="card"><h2>Debug Actions</h2>
 <div class="buttons">
@@ -108,9 +107,8 @@ function addLogLine(text){if(!text)return;const log=document.getElementById('log
 function clearLog(){document.getElementById('log').innerHTML=''}
 function setConn(ok){document.getElementById('httpDot').classList.toggle('on',ok);document.getElementById('httpLabel').textContent=ok?'HTTP 已连接':'HTTP 未连接'}
 function setState(id,on){const el=document.getElementById(id);el.textContent=on?'开':'关';el.classList.toggle('on',!!on)}
-function applyStatus(s){document.getElementById('ip').textContent=s.ip||'-';document.getElementById('uptime').textContent=(s.uptime_s||0)+' s';document.getElementById('lastResult').textContent=s.last_result||'-';document.getElementById('person').textContent=s.person?'检测到人':'未检测到人';document.getElementById('wakeGate').textContent=((s.wake_energy||0)+' / 阈值 '+(s.wake_threshold||0)+(s.wake_listener?' · 监听中':' · 未监听'));document.getElementById('wakePeak').textContent=String(s.wake_peak||0);const slider=document.getElementById('wakeThreshold');const val=document.getElementById('wakeThresholdValue');if(slider&&document.activeElement!==slider&&s.wake_threshold){slider.value=s.wake_threshold;val.textContent=s.wake_threshold}setState('lightState',s.light);setState('fanState',s.fan);setState('speakerState',s.speaker);if(s.boot_id!==undefined&&s.boot_id!==lastBootId){lastBootId=s.boot_id;lastDebugLog='';clearLog()}if(typeof s.debug_log==='string'){if(!lastDebugLog||!s.debug_log.startsWith(lastDebugLog)){clearLog();s.debug_log.split('\n').map(x=>x.trim()).filter(Boolean).forEach(addLogLine)}else{s.debug_log.slice(lastDebugLog.length).split('\n').map(x=>x.trim()).filter(Boolean).forEach(addLogLine)}lastDebugLog=s.debug_log}}
+function applyStatus(s){document.getElementById('ip').textContent=s.ip||'-';document.getElementById('uptime').textContent=(s.uptime_s||0)+' s';document.getElementById('lastResult').textContent=s.last_result||'-';document.getElementById('person').textContent=s.person?'检测到人':'未检测到人';document.getElementById('wakeGate').textContent=((s.wake_energy||0)+(s.wake_listener?' · 监听中':' · 未监听'));setState('lightState',s.light);setState('fanState',s.fan);setState('speakerState',s.speaker);if(s.boot_id!==undefined&&s.boot_id!==lastBootId){lastBootId=s.boot_id;lastDebugLog='';clearLog()}if(typeof s.debug_log==='string'){if(!lastDebugLog||!s.debug_log.startsWith(lastDebugLog)){clearLog();s.debug_log.split('\n').map(x=>x.trim()).filter(Boolean).forEach(addLogLine)}else{s.debug_log.slice(lastDebugLog.length).split('\n').map(x=>x.trim()).filter(Boolean).forEach(addLogLine)}lastDebugLog=s.debug_log}}
 async function fetchStatus(){const r=await fetch('/api/status');if(!r.ok)throw new Error('status');return r.json()}
-async function applyWakeThreshold(){const v=document.getElementById('wakeThreshold').value;await runCmd('wake_threshold:'+v,'设置 Wake 阈值')}
 async function refresh(){try{const s=await fetchStatus();setConn(true);applyStatus(s)}catch(e){setConn(false)}}
 async function runCmd(cmd,label){
 try{
@@ -313,6 +311,7 @@ bool ws_add_client(WiFiClient& client) {
     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
         if (!g_ws_clients[i] || !g_ws_clients[i].connected()) {
             g_ws_clients[i] = client;
+            g_last_ws_remote_ip = client.remoteIP().toString();
             return true;
         }
     }
@@ -520,6 +519,7 @@ void wifi_set_command_handler(WifiCommandHandler handler)   { g_cmd_handler = ha
 void wifi_set_status_provider(WifiStatusProvider provider)  { g_status_provider = provider; }
 void wifi_set_image_handler(WifiImageHandler handler)       { g_image_handler = handler; }
 void wifi_set_ws_message_handler(WifiWSMessageHandler h)    { g_ws_msg_handler = h; }
+String wifi_last_ws_remote_ip()                             { return g_last_ws_remote_ip; }
 
 void wifi_handle_client() {
     g_server.handleClient();

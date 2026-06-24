@@ -319,6 +319,35 @@ String build_audio_payload(const int16_t* pcm_data, size_t sample_count) {
     return payload;
 }
 
+String build_text_json_payload(const String& transcript) {
+    String payload;
+    payload.reserve(transcript.length() + 1400);
+    payload += "{\"model\":\"";
+    payload += json_escape(String(g_qwen_config.image_model));
+    payload += "\",\"messages\":[{\"role\":\"system\",\"content\":\"";
+    payload += json_escape(
+        "你是桌面助手的动作规划器。"
+        "你必须只返回一个 JSON 对象，不要返回 Markdown，不要返回额外解释。"
+        "JSON 至少包含字段 result, face, servo, answer, light。"
+        "result 只能是 succeed 或 error。"
+        "face 只能是 happy、confused、surprised、idle、listening 之一。"
+        "servo 只能是 happy、confused、surprised、none 之一。"
+        "light 只能是 on、off、keep 之一。"
+        "answer 必须是给用户的一句简短中文回复。"
+        "如果用户要求开灯、打开灯、亮灯，则 light=on。"
+        "如果用户要求关灯、关闭灯、熄灯，则 light=off。"
+        "如果没有提到灯，则 light=keep。"
+        "如果用户表达困惑、没听懂、疑问，face=confused, servo=confused。"
+        "如果用户表达震惊、惊讶，face=surprised, servo=surprised。"
+        "如果用户表达开心、夸奖、欢迎、积极肯定，face=happy, servo=happy。"
+        "如果只是普通控制指令且没有明显情绪，face=idle, servo=none。"
+        "如果文本无法理解，result=error, face=confused, servo=confused, light=keep。");
+    payload += "\"},{\"role\":\"user\",\"content\":\"";
+    payload += json_escape(String("用户语音转写：") + transcript);
+    payload += "\"}],\"response_format\":{\"type\":\"json_object\"},\"max_tokens\":220}";
+    return payload;
+}
+
 String build_audio_payload_from_base64(const String& audio_b64, const char* format) {
     if (!audio_b64.length() || !format || !strlen(format)) return String();
 
@@ -561,6 +590,50 @@ bool qwen_recognize_voice_command(const int16_t* pcm_data, size_t sample_count, 
 
     command_text = classify_voice_command(transcript);
     return true;
+}
+
+bool qwen_plan_voice_response_json(const int16_t* pcm_data, size_t sample_count, String& json_text) {
+    json_text = "";
+
+    if (!qwen_is_configured()) {
+        json_text = qwen_config_status();
+        return false;
+    }
+    if (!pcm_data || sample_count == 0) {
+        json_text = "Empty audio";
+        return false;
+    }
+
+    String transcript;
+    String asr_payload = build_audio_payload(pcm_data, sample_count);
+    if (!asr_payload.length()) {
+        json_text = "Audio payload build failed";
+        return false;
+    }
+    if (!post_qwen_payload(g_qwen_config.voice_api_url, asr_payload, transcript)) {
+        json_text = transcript;
+        return false;
+    }
+
+    transcript = normalize_transcript(transcript);
+    debug_log_append(String("[Qwen] Transcript: ") + transcript, "system");
+    if (!transcript.length()) {
+        json_text = "Empty transcript";
+        return false;
+    }
+
+    String planner_payload = build_text_json_payload(transcript);
+    if (!planner_payload.length()) {
+        json_text = "Planner payload build failed";
+        return false;
+    }
+
+    if (!post_qwen_payload(g_qwen_config.image_api_url, planner_payload, json_text)) {
+        return false;
+    }
+
+    json_text.trim();
+    return json_text.startsWith("{");
 }
 
 bool qwen_test_voice_sample(String& command_text) {

@@ -17,6 +17,7 @@ bool qwen_is_configured();
 String qwen_config_status();
 bool qwen_recognize_image(const uint8_t* jpeg_data, size_t jpeg_len, String& result_text);
 bool qwen_recognize_voice_command(const int16_t* pcm_data, size_t sample_count, String& command_text);
+bool qwen_plan_voice_response_json(const int16_t* pcm_data, size_t sample_count, String& json_text);
 bool qwen_test_voice_sample(String& command_text);
 
 #endif

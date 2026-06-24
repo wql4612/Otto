@@ -31,6 +31,9 @@
 #include "uart_driver.h"
 #include "debug_log.h"
 #include "qwen_client.h"
+#include <HTTPClient.h>
+#include <WiFiClient.h>
+#include <base64.h>
 #include <esp_system.h>
 #include <esp_sleep.h>
 
@@ -43,6 +46,9 @@
 #define VOICE_COMMAND_MS 5000
 #define WAKE_LISTENER_AUTOSTART_MS 6000
 #define DEEP_SLEEP_WAKE_MINUTES 30
+
+constexpr uint16_t HOST_SERVER_PORT = 9000;
+const char* HOST_SERVER_PATH_VOICE_COMMAND = "/api/voice/command";
 
 const char* WIFI_SSID     = "WHU-STU-7.4G";
 const char* WIFI_PASSWORD = "2842234004";
@@ -70,7 +76,6 @@ constexpr int ULTRASONIC_TRIG_PIN = 44;
 constexpr int ULTRASONIC_ECHO_PIN = 43;
 constexpr float ULTRASONIC_TRIGGER_CM = 50.0f;
 constexpr unsigned long ULTRASONIC_POLL_MS = 1000;
-constexpr unsigned long ULTRASONIC_RECHECK_MS = 5000;
 
 const char* RADIO_ACK_LIGHT_ON  = "/radio/light_on.wav";
 const char* RADIO_ACK_LIGHT_OFF = "/radio/light_off.wav";
@@ -130,17 +135,32 @@ static uint8_t* g_loopback_buf = nullptr;
 static size_t   g_loopback_len = 0;
 static bool     g_voice_waiting_command = false;
 static bool     g_voice_ack_pending = false;
+static bool     g_host_waiting_action = false;
+static bool     g_host_action_pending = false;
 static unsigned long g_voice_ack_deadline_ms = 0;
+static unsigned long g_host_wait_deadline_ms = 0;
 static bool     g_wake_autostart_pending = true;
 static unsigned long g_wake_autostart_at_ms = 0;
 static uint32_t g_boot_id = 0;
 static bool     g_presence_probe_busy = false;
 static bool     g_presence_last_object_near = false;
+static bool     g_presence_checked_for_current_object = false;
 static unsigned long g_presence_last_check_ms = 0;
-static unsigned long g_presence_last_trigger_ms = 0;
 static bool     g_ultrasonic_last_ok = false;
 static bool     g_sleep_pending = false;
 static unsigned long g_sleep_at_ms = 0;
+static String   g_host_pending_action_json;
+static String   g_host_session_id;
+static uint32_t g_host_session_seq = 0;
+static String   g_host_server_ip;
+
+enum RuntimeMode : uint8_t {
+    MODE_STANDALONE = 0,
+    MODE_HOST_ENHANCED = 1
+};
+
+static RuntimeMode g_runtime_mode = MODE_STANDALONE;
+static bool        g_host_claimed = false;
 
 // FreeRTOS
 static QueueHandle_t g_cmd_queue = nullptr;
@@ -150,6 +170,8 @@ static TaskHandle_t  g_task_spk  = nullptr;
 // Loopback 状态机
 enum SysState { ST_IDLE, ST_LOOPBACK_REC, ST_LOOPBACK_PLAY };
 static SysState g_state = ST_IDLE;
+
+bool apply_qwen_voice_json(const String& json_text, String& answer_out);
 
 // ═══════════════════════════════════════
 // 工具函数
@@ -194,7 +216,8 @@ bool play_feedback_audio(const char* path, int fallback_freq_a, int fallback_fre
 }
 
 bool is_voice_command_stage_active() {
-    return g_voice_waiting_command || g_voice_ack_pending;
+    return g_voice_waiting_command || g_voice_ack_pending ||
+           g_host_waiting_action || g_host_action_pending;
 }
 
 void enter_voice_listening_face() {
@@ -205,6 +228,275 @@ void enter_voice_listening_face() {
 void restore_face_after_voice_stage() {
     screen_show_face_jpeg(FACE_FILES[FACE_HAPPY]);
     g_current_face = FACE_HAPPY;
+}
+
+const char* runtime_mode_name() {
+    return g_runtime_mode == MODE_HOST_ENHANCED ? "host_enhanced" : "standalone";
+}
+
+const char* voice_stage_name() {
+    if (g_voice_ack_pending) return "ack_pending";
+    if (g_host_waiting_action) return "host_wait_action";
+    if (g_host_action_pending) return "host_action_pending";
+    if (g_voice_waiting_command) return "standalone_command";
+    if (voice_listener_running()) return "wake_listening";
+    return "idle";
+}
+
+void clear_host_voice_state() {
+    g_host_waiting_action = false;
+    g_host_action_pending = false;
+    g_host_wait_deadline_ms = 0;
+    g_host_pending_action_json = "";
+    g_host_session_id = "";
+}
+
+void set_runtime_mode(RuntimeMode mode, const char* reason = nullptr) {
+    if (g_runtime_mode == mode) return;
+
+    g_runtime_mode = mode;
+    String message = String("[Host] Runtime mode -> ") + runtime_mode_name();
+    if (reason && strlen(reason) > 0) {
+        message += " (";
+        message += reason;
+        message += ")";
+    }
+    debug_log_append(message, "system");
+    set_last_result(String("Mode: ") + runtime_mode_name());
+}
+
+String next_host_session_id() {
+    char buf[32];
+    ++g_host_session_seq;
+    snprintf(buf, sizeof(buf), "wake-%lu-%lu",
+             (unsigned long)(millis() / 1000UL),
+             (unsigned long)g_host_session_seq);
+    return String(buf);
+}
+
+void ws_send_host_message(const String& json) {
+    if (!json.length()) return;
+    ws_broadcast(json);
+}
+
+void notify_host_state() {
+    String json = "{\"type\":\"state\",\"mode\":\"";
+    json += runtime_mode_name();
+    json += "\",\"voice_stage\":\"";
+    json += voice_stage_name();
+    json += "\",\"host_claimed\":";
+    json += (g_host_claimed ? "true" : "false");
+    json += ",\"wake_listener\":";
+    json += (voice_listener_running() ? "true" : "false");
+    json += ",\"person_present\":";
+    json += (g_sys.person_present ? "true" : "false");
+    json += ",\"light\":";
+    json += (g_sys.light_on ? "true" : "false");
+    if (g_host_session_id.length()) {
+        json += ",\"session_id\":\"";
+        json += json_escape(g_host_session_id);
+        json += "\"";
+    }
+    json += "}";
+    ws_send_host_message(json);
+}
+
+void notify_host_hello() {
+    String json = "{\"type\":\"hello\",\"device_id\":\"otto-esp32s3\",";
+    json += "\"fw\":\"v3\",\"mode\":\"";
+    json += runtime_mode_name();
+    json += "\",\"capabilities\":{";
+    json += "\"local_wake\":true,";
+    json += "\"pcm_uplink\":false,";
+    json += "\"screen\":true,";
+    json += "\"servo180\":";
+    json += (ENABLE_SERVO_180 ? "true" : "false");
+    json += ",\"speaker_local\":true,";
+    json += "\"tts_stream_pull\":false";
+    json += "}}";
+    ws_send_host_message(json);
+}
+
+bool apply_action_json_with_feedback(const String& json_text, String& message_out) {
+    const bool light_before = g_sys.light_on;
+    String answer;
+    bool ok = apply_qwen_voice_json(json_text, answer);
+
+    if (g_sys.light_on != light_before) {
+        if (g_sys.light_on) {
+            log_event("command", "动作执行 · 开灯");
+            play_feedback_audio(RADIO_ACK_LIGHT_ON, 880, 1180);
+        } else {
+            log_event("command", "动作执行 · 关灯");
+            play_feedback_audio(RADIO_ACK_LIGHT_OFF, 620, 440);
+        }
+    }
+
+    if (!ok) {
+        message_out = answer.length() ? answer : String("Voice action apply failed");
+        return false;
+    }
+
+    message_out = answer.length() ? answer : String("Voice action applied");
+    return true;
+}
+
+void resume_wake_listener_after_stage() {
+    g_voice_waiting_command = false;
+    g_voice_ack_pending = false;
+    clear_host_voice_state();
+    voice_set_listener_enabled(true);
+    if (!voice_listener_running() && !voice_start_wake_listener()) {
+        debug_log_append("[Wake] Failed to restart listener", "system");
+    } else if (voice_listener_running()) {
+        debug_log_append("[Wake] Listener restarted", "system");
+    }
+    notify_host_state();
+}
+
+void notify_host_wake_event() {
+    if (!g_host_claimed || g_runtime_mode != MODE_HOST_ENHANCED) return;
+
+    g_host_session_id = next_host_session_id();
+    String json = "{\"type\":\"wake\",\"session_id\":\"";
+    json += json_escape(g_host_session_id);
+    json += "\",\"source\":\"local_wake\",\"energy\":";
+    json += String(voice_last_energy_level());
+    json += "}";
+    ws_send_host_message(json);
+    notify_host_state();
+}
+
+String host_server_base_url() {
+    String host_ip = g_host_server_ip;
+    if (!host_ip.length()) {
+        host_ip = wifi_last_ws_remote_ip();
+    }
+    if (!host_ip.length()) return String();
+
+    String url = "http://";
+    url += host_ip;
+    url += ":";
+    url += String(HOST_SERVER_PORT);
+    return url;
+}
+
+String host_server_voice_url() {
+    String base = host_server_base_url();
+    if (!base.length()) return String();
+    return base + String(HOST_SERVER_PATH_VOICE_COMMAND);
+}
+
+bool run_host_voice_command(String& message) {
+    if (!wifi_is_connected()) {
+        message = "WiFi disconnected";
+        return false;
+    }
+
+    String host_url = host_server_voice_url();
+    if (!host_url.length()) {
+        message = "Host server IP unknown";
+        return false;
+    }
+
+    const size_t max_bytes = SAMPLE_RATE * SAMPLE_BITS / 8 * VOICE_COMMAND_MS / 1000;
+    uint8_t* audio_buf = (uint8_t*)ps_malloc(max_bytes);
+    if (!audio_buf) {
+        message = "Audio buffer alloc failed";
+        return false;
+    }
+
+    debug_log_append("[Host] Recording voice command for local server...", "system");
+    size_t got = mic_record(audio_buf, max_bytes, NULL);
+    if (got == 0) {
+        free(audio_buf);
+        message = mic_is_busy() ? "Mic busy" : "No audio captured";
+        return false;
+    }
+
+    String audio_b64 = base64::encode(audio_buf, got);
+    free(audio_buf);
+    audio_b64.replace("\n", "");
+    audio_b64.replace("\r", "");
+
+    String payload = "{\"audio_base64\":\"";
+    payload += audio_b64;
+    payload += "\",\"audio_format\":\"wav\"}";
+
+    WiFiClient client;
+    HTTPClient http;
+    if (!http.begin(client, host_url)) {
+        message = "Host HTTP begin failed";
+        return false;
+    }
+
+    http.setConnectTimeout(15000);
+    http.setTimeout(90000);
+    http.addHeader("Content-Type", "application/json");
+
+    int http_code = http.POST((uint8_t*)payload.c_str(), payload.length());
+    String response = http.getString();
+    http.end();
+
+    if (http_code <= 0) {
+        message = String("Host HTTP POST failed: ") + http_code;
+        return false;
+    }
+    if (http_code < 200 || http_code >= 300) {
+        message = String("Host HTTP ") + http_code + ": " + response.substring(0, 180);
+        return false;
+    }
+
+    int action_idx = response.indexOf("\"action\"");
+    if (action_idx < 0) {
+        message = "Host response missing action";
+        return false;
+    }
+    int action_brace = response.indexOf('{', action_idx);
+    if (action_brace < 0) {
+        message = "Host action JSON missing";
+        return false;
+    }
+
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    int action_end = -1;
+    for (int i = action_brace; i < (int)response.length(); ++i) {
+        char c = response[i];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            continue;
+        }
+        if (c == '{') {
+            depth++;
+        } else if (c == '}') {
+            depth--;
+            if (depth == 0) {
+                action_end = i;
+                break;
+            }
+        }
+    }
+
+    if (action_end < 0) {
+        message = "Host action parse failed";
+        return false;
+    }
+
+    String action_json = response.substring(action_brace, action_end + 1);
+    debug_log_append(String("[Host] Action JSON: ") + action_json, "system");
+    return apply_action_json_with_feedback(action_json, message);
 }
 
 bool run_cloud_voice_command(String& message) {
@@ -223,28 +515,16 @@ bool run_cloud_voice_command(String& message) {
         return false;
     }
 
-    String command;
-    bool ok = qwen_recognize_voice_command((const int16_t*)audio_buf, got / 2, command);
+    String qwen_json;
+    bool ok = qwen_plan_voice_response_json((const int16_t*)audio_buf, got / 2, qwen_json);
     free(audio_buf);
     if (!ok) {
-        message = command;
+        message = qwen_json;
         return false;
     }
 
-    if (command == "light_on") {
-        g_sys.light_on = true;
-        log_event("command", "云端语音 · 开灯");
-        play_feedback_audio(RADIO_ACK_LIGHT_ON, 880, 1180);
-        message = "Voice command: light_on";
-    } else if (command == "light_off") {
-        g_sys.light_on = false;
-        log_event("command", "云端语音 · 关灯");
-        play_feedback_audio(RADIO_ACK_LIGHT_OFF, 620, 440);
-        message = "Voice command: light_off";
-    } else {
-        message = "Voice command: none";
-    }
-    return true;
+    debug_log_append(String("[Qwen] Voice JSON: ") + qwen_json, "system");
+    return apply_action_json_with_feedback(qwen_json, message);
 }
 
 bool parse_has_face_result(const String& text, bool& has_face) {
@@ -260,6 +540,129 @@ bool parse_has_face_result(const String& text, bool& has_face) {
         return true;
     }
     return false;
+}
+
+bool extract_json_string_field_local(const String& json, const char* key, String& value) {
+    String pattern = String("\"") + key + "\"";
+    int key_idx = json.indexOf(pattern);
+    if (key_idx < 0) return false;
+    int colon = json.indexOf(':', key_idx + pattern.length());
+    if (colon < 0) return false;
+    int quote = json.indexOf('"', colon + 1);
+    if (quote < 0) return false;
+
+    String raw;
+    bool escaped = false;
+    for (int i = quote + 1; i < (int)json.length(); ++i) {
+        char c = json[i];
+        if (escaped) {
+            switch (c) {
+                case 'n': raw += '\n'; break;
+                case 'r': raw += '\r'; break;
+                case 't': raw += '\t'; break;
+                case '\\': raw += '\\'; break;
+                case '"': raw += '"'; break;
+                default: raw += c; break;
+            }
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            value = raw;
+            return true;
+        }
+        raw += c;
+    }
+    return false;
+}
+
+FaceIndex face_from_name(const String& face_name) {
+    if (face_name == "happy") return FACE_HAPPY;
+    if (face_name == "confused") return FACE_CONFUSED;
+    if (face_name == "surprised") return FACE_SURPRISED;
+    if (face_name == "listening") return FACE_LISTENING;
+    return FACE_IDLE;
+}
+
+void show_face_by_name(const String& face_name) {
+    FaceIndex face = face_from_name(face_name);
+    screen_show_face_jpeg(FACE_FILES[face]);
+    g_current_face = face;
+}
+
+void servo180_set_if_ready(int angle_deg) {
+    if (!ENABLE_SERVO_180) return;
+    if (!servo_180.attached()) servo_180.attach(SERVO_180_PIN);
+    servo_180.set_angle(angle_deg);
+}
+
+void servo_motion_from_name(const String& servo_name) {
+    if (!ENABLE_SERVO_180) return;
+
+    if (servo_name == "confused") {
+        servo180_set_if_ready(30);
+        return;
+    }
+
+    if (servo_name == "surprised") {
+        for (int i = 0; i < 3; ++i) {
+            servo180_set_if_ready(78);
+            delay(130);
+            servo180_set_if_ready(102);
+            delay(130);
+        }
+        servo180_set_if_ready(90);
+        return;
+    }
+
+    if (servo_name == "happy") {
+        for (int i = 0; i < 3; ++i) {
+            servo180_set_if_ready(55);
+            delay(150);
+            servo180_set_if_ready(125);
+            delay(150);
+        }
+        servo180_set_if_ready(90);
+        return;
+    }
+
+    servo180_set_if_ready(90);
+}
+
+bool apply_qwen_voice_json(const String& json_text, String& answer_out) {
+    String result;
+    String face;
+    String servo;
+    String answer;
+    String light;
+
+    if (!extract_json_string_field_local(json_text, "result", result)) return false;
+    if (!extract_json_string_field_local(json_text, "face", face)) return false;
+    if (!extract_json_string_field_local(json_text, "servo", servo)) return false;
+    if (!extract_json_string_field_local(json_text, "answer", answer)) return false;
+    extract_json_string_field_local(json_text, "light", light);
+
+    answer_out = answer;
+
+    if (result == "error") {
+        show_face_by_name("confused");
+        servo_motion_from_name("confused");
+        return false;
+    }
+
+    if (light == "on") {
+        g_sys.light_on = true;
+    } else if (light == "off") {
+        g_sys.light_on = false;
+    }
+
+    show_face_by_name(face);
+    servo_motion_from_name(servo);
+    return true;
 }
 
 bool ultrasonic_pins_conflict(int trig_pin, int echo_pin) {
@@ -304,6 +707,7 @@ void prepare_and_enter_deep_sleep() {
     voice_wait_listener_stopped(400);
     g_voice_waiting_command = false;
     g_voice_ack_pending = false;
+    clear_host_voice_state();
     g_wake_autostart_pending = false;
 
     if (ENABLE_SERVO_180 && servo_180.attached()) servo_180.detach();
@@ -373,15 +777,17 @@ void presence_loop() {
     }
 
     const bool edge_trigger = object_near && !g_presence_last_object_near;
-    const bool timed_recheck = object_near && (millis() - g_presence_last_trigger_ms >= ULTRASONIC_RECHECK_MS);
+    const bool should_probe = edge_trigger && !g_presence_checked_for_current_object;
 
-    if (edge_trigger || timed_recheck) {
-        g_presence_last_trigger_ms = millis();
+    if (should_probe) {
+        g_presence_checked_for_current_object = true;
+        debug_log_append("[Presence] Object entered range, run face check once", "detect");
         run_presence_probe_once();
     } else if (!object_near && g_presence_last_object_near) {
+        g_presence_checked_for_current_object = false;
         g_sys.person_present = false;
         screen_clear(ST77XX_BLACK);
-        debug_log_append("[Presence] Object left, screen off", "detect");
+        debug_log_append("[Presence] Object left, reset to idle and screen off", "detect");
     }
 
     g_presence_last_object_near = object_near;
@@ -402,25 +808,34 @@ String status_provider() {
     json += json_escape(debug_log_text());
     json += "\"";
     json += ",\"person\":";
-    json += g_sys.person_present ? "true" : "false";
+    json += (g_sys.person_present ? "true" : "false");
     json += ",\"light\":";
-    json += g_sys.light_on ? "true" : "false";
+    json += (g_sys.light_on ? "true" : "false");
     json += ",\"fan\":";
-    json += g_sys.fan_on ? "true" : "false";
+    json += (g_sys.fan_on ? "true" : "false");
     json += ",\"speaker\":";
-    json += g_sys.speaker_on ? "true" : "false";
-    json += ",\"wake_threshold\":";
-    json += String(voice_gate_threshold());
+    json += (g_sys.speaker_on ? "true" : "false");
     json += ",\"wake_energy\":";
     json += String(voice_last_energy_level());
-    json += ",\"wake_peak\":";
-    json += String(voice_last_peak_level());
     json += ",\"wake_listener\":";
-    json += voice_listener_running() ? "true" : "false";
+    json += (voice_listener_running() ? "true" : "false");
+    json += ",\"runtime_mode\":\"";
+    json += runtime_mode_name();
+    json += "\"";
+    json += ",\"host_claimed\":";
+    json += (g_host_claimed ? "true" : "false");
+    json += ",\"host_waiting_action\":";
+    json += (g_host_waiting_action ? "true" : "false");
+    json += ",\"host_server_ip\":\"";
+    json += json_escape(g_host_server_ip.length() ? g_host_server_ip : wifi_last_ws_remote_ip());
+    json += "\"";
+    json += ",\"voice_stage\":\"";
+    json += voice_stage_name();
+    json += "\"";
     json += ",\"ultrasonic_ready\":";
-    json += ultrasonic_is_ready() ? "true" : "false";
+    json += (ultrasonic_is_ready() ? "true" : "false");
     json += ",\"ultrasonic_ok\":";
-    json += g_ultrasonic_last_ok ? "true" : "false";
+    json += (g_ultrasonic_last_ok ? "true" : "false");
     json += ",\"ultrasonic_distance_cm\":";
     json += String(ultrasonic_last_distance_cm(), 1);
     json += ",\"face\":";
@@ -433,16 +848,26 @@ String status_provider() {
 }
 
 void broadcast_status() {
-    char buf[256];
-    snprintf(buf, sizeof(buf),
-        "{\"type\":\"status\","
-        "\"person\":%s,\"light\":%s,\"fan\":%s,\"speaker\":%s,\"face\":%d}",
-        g_sys.person_present ? "true" : "false",
-        g_sys.light_on       ? "true" : "false",
-        g_sys.fan_on         ? "true" : "false",
-        g_sys.speaker_on     ? "true" : "false",
-        (int)g_current_face);
-    ws_broadcast(buf);
+    String json = "{\"type\":\"status\",";
+    json += "\"person\":";
+    json += (g_sys.person_present ? "true" : "false");
+    json += ",\"light\":";
+    json += (g_sys.light_on ? "true" : "false");
+    json += ",\"fan\":";
+    json += (g_sys.fan_on ? "true" : "false");
+    json += ",\"speaker\":";
+    json += (g_sys.speaker_on ? "true" : "false");
+    json += ",\"face\":";
+    json += String((int)g_current_face);
+    json += ",\"runtime_mode\":\"";
+    json += runtime_mode_name();
+    json += "\"";
+    json += ",\"host_claimed\":";
+    json += (g_host_claimed ? "true" : "false");
+    json += ",\"voice_stage\":\"";
+    json += voice_stage_name();
+    json += "\"}";
+    ws_broadcast(json);
 }
 
 // ═══════════════════════════════════════
@@ -462,6 +887,56 @@ static void on_image_data(const uint8_t* data, size_t len, size_t index, size_t 
 // WebSocket 消息处理（前端控制面板）
 // ═══════════════════════════════════════
 static void on_ws_message(const String& msg) {
+    if (msg.indexOf("\"type\":\"host_claim\"") >= 0) {
+        g_host_claimed = true;
+        g_host_server_ip = wifi_last_ws_remote_ip();
+        set_runtime_mode(MODE_HOST_ENHANCED, "claimed by host");
+        notify_host_hello();
+        if (g_host_server_ip.length()) {
+            debug_log_printf("system", "[Host] Server IP = %s", g_host_server_ip.c_str());
+        }
+        notify_host_state();
+        broadcast_status();
+        return;
+    }
+
+    if (msg.indexOf("\"type\":\"host_release\"") >= 0) {
+        g_host_claimed = false;
+        g_host_server_ip = "";
+        resume_wake_listener_after_stage();
+        set_runtime_mode(MODE_STANDALONE, "released by host");
+        notify_host_state();
+        broadcast_status();
+        return;
+    }
+
+    if (msg.indexOf("\"type\":\"action\"") >= 0) {
+        String session_id;
+        extract_json_string_field_local(msg, "session_id", session_id);
+        if (session_id.length() && g_host_session_id.length() && session_id != g_host_session_id) {
+            debug_log_printf("system",
+                             "[Host] Ignore action for stale session %s (expect %s)",
+                             session_id.c_str(), g_host_session_id.c_str());
+            return;
+        }
+        g_host_pending_action_json = msg;
+        g_host_action_pending = true;
+        g_host_waiting_action = false;
+        g_host_wait_deadline_ms = 0;
+        if (session_id.length()) g_host_session_id = session_id;
+        debug_log_append("[Host] Action received from host", "system");
+        notify_host_state();
+        return;
+    }
+
+    if (msg.indexOf("\"type\":\"stop\"") >= 0 || msg.indexOf("\"type\":\"reset\"") >= 0) {
+        debug_log_append("[Host] Voice stage cancelled by host", "system");
+        resume_wake_listener_after_stage();
+        set_last_result("Host cancelled current voice stage");
+        broadcast_status();
+        return;
+    }
+
     if (msg.indexOf("\"type\":\"cmd\"") >= 0) {
         if (msg.indexOf("\"device\":\"light\"") >= 0) {
             g_sys.light_on = (msg.indexOf("\"action\":\"on\"") >= 0);
@@ -611,6 +1086,25 @@ static bool handle_debug_command(const String& cmd, String& message) {
     else if (cmd == "wifi_status") {
         message = "WiFi: " + String(wifi_is_connected() ? "yes" : "no") +
                   ", IP: " + wifi_ip_string();
+    } else if (cmd == "host_mode_host" || cmd.startsWith("host_mode_host:")) {
+        g_host_claimed = true;
+        if (cmd.startsWith("host_mode_host:")) {
+            g_host_server_ip = cmd.substring(strlen("host_mode_host:"));
+            g_host_server_ip.trim();
+        }
+        if (!g_host_server_ip.length()) {
+            g_host_server_ip = wifi_last_ws_remote_ip();
+        }
+        set_runtime_mode(MODE_HOST_ENHANCED, "local debug");
+        notify_host_state();
+        message = "Host mode: ON @ " + host_server_base_url();
+    } else if (cmd == "host_mode_standalone") {
+        g_host_claimed = false;
+        g_host_server_ip = "";
+        resume_wake_listener_after_stage();
+        set_runtime_mode(MODE_STANDALONE, "local debug");
+        notify_host_state();
+        message = "Host mode: OFF";
     }
     // ── Ping ──
     else if (cmd == "ping") {
@@ -663,7 +1157,6 @@ static bool handle_debug_command(const String& cmd, String& message) {
     } else if (cmd == "qwen_voice_test") {
         enter_voice_listening_face();
         bool ok = run_cloud_voice_command(message);
-        restore_face_after_voice_stage();
         return ok;
     } else if (cmd == "qwen_voice_sample") {
         String transcript;
@@ -693,15 +1186,6 @@ static bool handle_debug_command(const String& cmd, String& message) {
             message = "Wake test: " + wake_detail;
             return false;
         }
-    } else if (cmd.startsWith("wake_threshold:")) {
-        const String raw = cmd.substring(String("wake_threshold:").length());
-        const int threshold = raw.toInt();
-        if (threshold <= 0) {
-            message = "Wake threshold invalid";
-            return false;
-        }
-        voice_set_gate_threshold((uint16_t)threshold);
-        message = "Wake threshold set: " + String(voice_gate_threshold());
     } else if (cmd == "wake_listener_on") {
         voice_set_listener_enabled(true);
         bool ok = voice_start_wake_listener();
@@ -999,6 +1483,8 @@ void loop() {
     if (!g_voice_waiting_command && voice_wake_detected()) {
         g_voice_ack_pending = true;
         g_voice_waiting_command = false;
+        g_host_waiting_action = false;
+        g_host_action_pending = false;
         voice_stop_wake_listener();
         if (!voice_wait_listener_stopped()) {
             debug_log_append("[Wake] Listener stop timeout, continue anyway", "system");
@@ -1009,37 +1495,48 @@ void loop() {
         const bool audio_ok = play_feedback_audio(RADIO_ACK_WAKE, 1040, 1320, 1.35f);
         log_event("command", audio_ok ? "本地唤醒 · 已播放应答，准备录制云端指令"
                                       : "本地唤醒 · 应答音失败，准备录制云端指令");
-        set_last_result(audio_ok ? "Wake detected, ack played, waiting before record..."
-                                 : "Wake detected, ack fallback, waiting before record...");
+        set_last_result(audio_ok ? "Wake detected, ack played, waiting next stage..."
+                                 : "Wake detected, ack fallback, waiting next stage...");
         g_voice_ack_deadline_ms = millis() + 450;
+        notify_host_state();
     }
 
     if (g_voice_ack_pending && millis() >= g_voice_ack_deadline_ms) {
         g_voice_ack_pending = false;
-        g_voice_waiting_command = true;
-        debug_log_append("[Wake] Ack window complete, start cloud recording", "system");
-        set_last_result("Wake ack complete, recording command...");
+        if (g_runtime_mode == MODE_HOST_ENHANCED && g_host_claimed) {
+            g_voice_waiting_command = true;
+            notify_host_wake_event();
+            debug_log_append("[Host] Wake forwarded to host, start host HTTP command", "system");
+            set_last_result("Wake ack complete, recording host command...");
+        } else {
+            g_voice_waiting_command = true;
+            debug_log_append("[Wake] Ack window complete, start cloud recording", "system");
+            set_last_result("Wake ack complete, recording command...");
+        }
+        notify_host_state();
     }
 
     if (g_voice_waiting_command) {
         String voice_message;
-        bool ok = run_cloud_voice_command(voice_message);
+        bool ok = false;
+        if (g_runtime_mode == MODE_HOST_ENHANCED && g_host_claimed) {
+            ok = run_host_voice_command(voice_message);
+            if (!ok) {
+                debug_log_append("[Host] Host command failed, fallback to standalone cloud command", "system");
+                ok = run_cloud_voice_command(voice_message);
+            }
+        } else {
+            ok = run_cloud_voice_command(voice_message);
+        }
         set_last_result(voice_message);
         if (!ok) {
             debug_log_append("[Voice] Cloud command failed: " + voice_message, "system");
         }
-        g_voice_waiting_command = false;
-        restore_face_after_voice_stage();
-        voice_set_listener_enabled(true);
-        if (!voice_listener_running() && !voice_start_wake_listener()) {
-            debug_log_append("[Wake] Failed to restart listener", "system");
-        } else if (voice_listener_running()) {
-            debug_log_append("[Wake] Listener restarted", "system");
-        }
+        resume_wake_listener_after_stage();
         broadcast_status();
     }
 
-    if (!g_voice_waiting_command && voice_listener_enabled() && !voice_listener_running()) {
+    if (!is_voice_command_stage_active() && voice_listener_enabled() && !voice_listener_running()) {
         if (voice_start_wake_listener()) {
             debug_log_append("[Wake] Listener auto-recovered", "system");
         }

@@ -46,10 +46,7 @@ bool        voice_wait_listener_stopped(uint32_t timeout_ms = 2500);
 bool        voice_listener_running();
 void        voice_set_listener_enabled(bool enabled);
 bool        voice_listener_enabled();
-void        voice_set_gate_threshold(uint16_t threshold);
-uint16_t    voice_gate_threshold();
 uint32_t    voice_last_energy_level();
-uint32_t    voice_last_peak_level();
 
 // ── 调试 ──
 const char* voice_command_name(VoiceCommand cmd);
