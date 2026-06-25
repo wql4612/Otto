@@ -8,7 +8,7 @@
  *   - 更新系统状态 (g_sys)
  *   - 控制 LCD 表情 (screen_show_face_jpeg)
  *   - RF 发射 (rf_send_on/off)
- *   - 舵机动作 (servo_180/360)
+ *   - 舵机动作 (servo_180/head_pan)
  *   - 音频反馈 (play_tone)
  *   - WebSocket 广播 (ws_broadcast / log_event)
  *
@@ -40,7 +40,7 @@ struct SystemState {
 extern SystemState g_sys;
 extern FaceIndex g_current_face;
 extern Servo180Driver servo_180;
-extern Servo360Driver servo_360;
+extern Servo180Driver servo_head_pan;
 
 void log_event(const char* category, const char* message);
 void play_tone(int freq, int duration_ms, int amplitude = 16000);
@@ -97,9 +97,9 @@ inline void execute_voice_command(VoiceCommand cmd) {
         // ── 互动 ──
         case CMD_HELLO:
             if (!servo_180.attached()) servo_180.attach(COMMAND_SERVO_180_PIN);
-            servo_180.set_angle(30);
+            servo_180.set_angle(60);
             delay(400);
-            servo_180.set_angle(90);
+            servo_180.set_angle(70);
             g_current_face = FACE_HAPPY;
             screen_show_face_jpeg(FACE_FILES[FACE_HAPPY]);
             play_tone(880, 100);
@@ -107,11 +107,11 @@ inline void execute_voice_command(VoiceCommand cmd) {
             break;
         case CMD_COME_HERE:
             if (!servo_180.attached()) servo_180.attach(COMMAND_SERVO_180_PIN);
-            servo_180.set_angle(30);
+            servo_180.set_angle(60);
             delay(300);
-            servo_180.set_angle(150);
+            servo_180.set_angle(80);
             delay(300);
-            servo_180.set_angle(90);
+            servo_180.set_angle(70);
             g_current_face = FACE_CUTE;
             screen_show_face_jpeg(FACE_FILES[FACE_CUTE]);
             break;
@@ -175,9 +175,9 @@ inline void execute_vision_event(VisionEvent event) {
             g_current_face = FACE_HAPPY;
             screen_show_face_jpeg(FACE_FILES[FACE_HAPPY]);
             if (!servo_180.attached()) servo_180.attach(COMMAND_SERVO_180_PIN);
-            servo_180.set_angle(30);
+            servo_180.set_angle(60);
             delay(300);
-            servo_180.set_angle(90);
+            servo_180.set_angle(70);
             play_tone(660, 80);
             play_tone(880, 120);
             log_event("detect", "检测到人进入 → 自动开灯");

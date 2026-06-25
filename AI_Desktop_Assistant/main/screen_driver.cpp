@@ -58,6 +58,7 @@ static int g_jpeg_x_offset = 0;
 static int g_jpeg_y_offset = 0;
 static int g_jpeg_draw_w = 0;
 static int g_jpeg_draw_h = 0;
+static bool g_rotate_face_ccw_90 = true;
 
 int jpeg_draw_cb(JPEGDRAW* pDraw) {
     // JPEGDEC uses iWidth for the MCU buffer width and iWidthUsed for the
@@ -76,11 +77,27 @@ int jpeg_draw_cb(JPEGDRAW* pDraw) {
 
     for (int row = 0; row < draw_h; ++row) {
         const uint16_t* row_pixels = pDraw->pPixels + (row * pDraw->iWidth);
+
+        if (!g_rotate_face_ccw_90) {
+            tft->startWrite();
+            tft->setAddrWindow(g_jpeg_x_offset + pDraw->x,
+                               phys_y(g_jpeg_y_offset + pDraw->y + row),
+                               draw_w, 1);
+            tft->writePixels(const_cast<uint16_t*>(row_pixels), draw_w, true, false);
+            tft->endWrite();
+            continue;
+        }
+
+        const int src_y = pDraw->y + row;
+        const int dest_x = g_jpeg_x_offset + src_y;
+        const int dest_y = g_jpeg_y_offset + (g_jpeg_draw_w - pDraw->x - draw_w);
+
         tft->startWrite();
-        tft->setAddrWindow(g_jpeg_x_offset + pDraw->x,
-                           phys_y(g_jpeg_y_offset + pDraw->y + row),
-                           draw_w, 1);
-        tft->writePixels(const_cast<uint16_t*>(row_pixels), draw_w, true, false);
+        tft->setAddrWindow(dest_x, phys_y(dest_y), 1, draw_w);
+        for (int col = draw_w - 1; col >= 0; --col) {
+            uint16_t pixel = row_pixels[col];
+            tft->writePixels(&pixel, 1, true, false);
+        }
         tft->endWrite();
     }
     return 1;
@@ -253,8 +270,10 @@ bool screen_show_face_jpeg(const char* path) {
     if (g_jpeg.open(f, jpeg_draw_cb)) {
         g_jpeg_draw_w = g_jpeg.getWidth();
         g_jpeg_draw_h = g_jpeg.getHeight();
-        g_jpeg_x_offset = (PHYS_W - g_jpeg_draw_w) / 2;
-        g_jpeg_y_offset = (PHYS_H - g_jpeg_draw_h) / 2;
+        int display_w = g_rotate_face_ccw_90 ? g_jpeg_draw_h : g_jpeg_draw_w;
+        int display_h = g_rotate_face_ccw_90 ? g_jpeg_draw_w : g_jpeg_draw_h;
+        g_jpeg_x_offset = (PHYS_W - display_w) / 2;
+        g_jpeg_y_offset = (PHYS_H - display_h) / 2;
         if (g_jpeg_x_offset < 0) g_jpeg_x_offset = 0;
         if (g_jpeg_y_offset < 0) g_jpeg_y_offset = 0;
         // Adafruit_GFX::drawRGBBitmap()/writePixels() consume native 16-bit

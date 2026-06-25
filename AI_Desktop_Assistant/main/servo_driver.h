@@ -6,7 +6,8 @@
 
 class Servo180Driver {
 public:
-    Servo180Driver(int min_pulse_us = 500, int max_pulse_us = 2500);
+    Servo180Driver(int min_pulse_us = 500, int max_pulse_us = 2500,
+                   int min_angle_deg = 60, int max_angle_deg = 80);
 
     bool attach(int pin);
     void detach();
@@ -21,33 +22,9 @@ private:
     bool is_attached_ = false;
     int min_pulse_us_;
     int max_pulse_us_;
+    int min_angle_deg_;
+    int max_angle_deg_;
     int current_angle_deg_ = 90;
-    ledc_timer_t ledc_timer_;
-    ledc_channel_t ledc_channel_;
-};
-
-class Servo360Driver {
-public:
-    Servo360Driver(int min_pulse_us = 500, int max_pulse_us = 2500, int stop_pulse_us = 1500);
-
-    bool attach(int pin);
-    void detach();
-    bool attached() const;
-    int pin() const;
-
-    void set_speed_percent(int speed_percent);
-    void set_pulse_us(int pulse_us);
-    void stop();
-    int current_speed_percent() const;
-    int stop_pulse_us() const;
-
-private:
-    int pin_ = -1;
-    bool is_attached_ = false;
-    int min_pulse_us_;
-    int max_pulse_us_;
-    int stop_pulse_us_;
-    int current_speed_percent_ = 0;
     ledc_timer_t ledc_timer_;
     ledc_channel_t ledc_channel_;
 };

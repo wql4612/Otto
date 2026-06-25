@@ -7,7 +7,7 @@
  *   LCD:      SCLK=7  MOSI=9  DC=3  CS=2
  *   I2S 功放: BCLK=6  LRCLK=5  DOUT=1
  *   PDM 麦克: CLK=42  DIN=41 (板载)
- *   SG90舵机: GPIO4    MG996R舵机: GPIO8
+ *   头部俯仰舵机(A): GPIO4    头部左右舵机(B): GPIO8
  *   433M RF:  GPIO43 (当前停用，释放资源)
  *   UART→51:  TX=9  RX=8 (当前未启用)
  *   Camera:   板载固定
@@ -65,12 +65,12 @@ const char* QWEN_IMAGE_PROMPT =
 const char* QWEN_VOICE_MODEL = "qwen3-asr-flash";
 
 constexpr bool ENABLE_SERVO_180 = true;
-constexpr bool ENABLE_SERVO_360 = true;
+constexpr bool ENABLE_SERVO_HEAD_PAN = true;
 constexpr bool ENABLE_RF = false;
 constexpr bool ENABLE_SERVO_IDLE_ANIMATION = false;
 
 constexpr int SERVO_180_PIN = 4;
-constexpr int SERVO_360_PIN = 8;
+constexpr int SERVO_HEAD_PAN_PIN = 8;
 constexpr int RF_TX_PIN     = 43;
 constexpr int ULTRASONIC_TRIG_PIN = 44;
 constexpr int ULTRASONIC_ECHO_PIN = 43;
@@ -90,14 +90,14 @@ const char* RADIO_ACK_WAKE      = "/radio/wake.wav";
 // ═══════════════════════════════════════
 // 全局对象
 // ═══════════════════════════════════════
-Servo180Driver servo_180;
-Servo360Driver servo_360;
+Servo180Driver servo_180(500, 2500, 60, 80);
+Servo180Driver servo_head_pan(500, 2500, 75, 105);
 
 static String g_last_result = "Idle";
 
 enum BootModuleIndex : uint8_t {
     BOOT_SERVO180 = 0,
-    BOOT_SERVO360,
+    BOOT_SERVO_HEAD_PAN,
     BOOT_SCREEN,
     BOOT_MIC,
     BOOT_SPEAKER,
@@ -112,7 +112,7 @@ enum BootModuleIndex : uint8_t {
 
 static ScreenStatusItem g_boot_items[BOOT_MODULE_COUNT] = {
     { "Servo180", false, false },
-    { "Servo360", false, false },
+    { "HeadPan", false, false },
     { "Screen", false, false },
     { "Mic", false, false },
     { "Speaker", false, false },
@@ -604,33 +604,33 @@ void servo_motion_from_name(const String& servo_name) {
     if (!ENABLE_SERVO_180) return;
 
     if (servo_name == "confused") {
-        servo180_set_if_ready(30);
+        servo180_set_if_ready(60);
         return;
     }
 
     if (servo_name == "surprised") {
         for (int i = 0; i < 3; ++i) {
-            servo180_set_if_ready(78);
+            servo180_set_if_ready(66);
             delay(130);
-            servo180_set_if_ready(102);
+            servo180_set_if_ready(80);
             delay(130);
         }
-        servo180_set_if_ready(90);
+        servo180_set_if_ready(70);
         return;
     }
 
     if (servo_name == "happy") {
         for (int i = 0; i < 3; ++i) {
-            servo180_set_if_ready(55);
+            servo180_set_if_ready(62);
             delay(150);
-            servo180_set_if_ready(125);
+            servo180_set_if_ready(78);
             delay(150);
         }
-        servo180_set_if_ready(90);
+        servo180_set_if_ready(70);
         return;
     }
 
-    servo180_set_if_ready(90);
+    servo180_set_if_ready(70);
 }
 
 bool apply_qwen_voice_json(const String& json_text, String& answer_out) {
@@ -674,7 +674,7 @@ bool ultrasonic_pins_conflict(int trig_pin, int echo_pin) {
         5,   // I2S LRCLK
         6,   // I2S BCLK
         7,   // LCD SCLK
-        8,   // Servo360 / legacy UART RX
+        8,   // Head pan servo / legacy UART RX
         9,   // LCD MOSI
         41,  // PDM DIN
         42   // PDM CLK
@@ -711,7 +711,7 @@ void prepare_and_enter_deep_sleep() {
     g_wake_autostart_pending = false;
 
     if (ENABLE_SERVO_180 && servo_180.attached()) servo_180.detach();
-    if (ENABLE_SERVO_360 && servo_360.attached()) servo_360.detach();
+    if (ENABLE_SERVO_HEAD_PAN && servo_head_pan.attached()) servo_head_pan.detach();
 
     speaker_idle();
     speaker_deinit();
@@ -1049,38 +1049,33 @@ static bool handle_debug_command(const String& cmd, String& message) {
         message = "Scene: away";
     }
     // ── 舵机 180° ──
-    else if (cmd == "servo180_0") {
+    else if (cmd == "servo180_45") {
         if (!ENABLE_SERVO_180) { message = "Servo180 disabled"; return false; }
         if (!servo_180.attached()) servo_180.attach(SERVO_180_PIN);
-        servo_180.set_angle(0);
-        message = "Servo180 -> 0 deg";
+        servo_180.set_angle(60);
+        message = "Servo180 -> 60 deg";
     } else if (cmd == "servo180_90") {
         if (!ENABLE_SERVO_180) { message = "Servo180 disabled"; return false; }
         if (!servo_180.attached()) servo_180.attach(SERVO_180_PIN);
-        servo_180.set_angle(90);
-        message = "Servo180 -> 90 deg";
-    } else if (cmd == "servo180_180") {
-        if (!ENABLE_SERVO_180) { message = "Servo180 disabled"; return false; }
-        if (!servo_180.attached()) servo_180.attach(SERVO_180_PIN);
-        servo_180.set_angle(180);
-        message = "Servo180 -> 180 deg";
+        servo_180.set_angle(80);
+        message = "Servo180 -> 80 deg";
     }
-    // ── 舵机 360° ──
-    else if (cmd == "servo360_rev") {
-        if (!ENABLE_SERVO_360) { message = "Servo360 disabled"; return false; }
-        if (!servo_360.attached()) servo_360.attach(SERVO_360_PIN);
-        servo_360.set_speed_percent(-50);
-        message = "Servo360 -> rev 50%";
-    } else if (cmd == "servo360_stop") {
-        if (!ENABLE_SERVO_360) { message = "Servo360 disabled"; return false; }
-        if (!servo_360.attached()) servo_360.attach(SERVO_360_PIN);
-        servo_360.stop();
-        message = "Servo360 -> stop";
-    } else if (cmd == "servo360_fwd") {
-        if (!ENABLE_SERVO_360) { message = "Servo360 disabled"; return false; }
-        if (!servo_360.attached()) servo_360.attach(SERVO_360_PIN);
-        servo_360.set_speed_percent(50);
-        message = "Servo360 -> fwd 50%";
+    // ── 头部左右摆动舵机（原 360° 通道，现为 180° 舵机）──
+    else if (cmd == "head_pan_left") {
+        if (!ENABLE_SERVO_HEAD_PAN) { message = "HeadPan disabled"; return false; }
+        if (!servo_head_pan.attached()) servo_head_pan.attach(SERVO_HEAD_PAN_PIN);
+        servo_head_pan.set_angle(75);
+        message = "HeadPan -> 75 deg";
+    } else if (cmd == "head_pan_center") {
+        if (!ENABLE_SERVO_HEAD_PAN) { message = "HeadPan disabled"; return false; }
+        if (!servo_head_pan.attached()) servo_head_pan.attach(SERVO_HEAD_PAN_PIN);
+        servo_head_pan.set_angle(90);
+        message = "HeadPan -> 90 deg";
+    } else if (cmd == "head_pan_right") {
+        if (!ENABLE_SERVO_HEAD_PAN) { message = "HeadPan disabled"; return false; }
+        if (!servo_head_pan.attached()) servo_head_pan.attach(SERVO_HEAD_PAN_PIN);
+        servo_head_pan.set_angle(105);
+        message = "HeadPan -> 105 deg";
     }
     // ── WiFi ──
     else if (cmd == "wifi_status") {
@@ -1272,14 +1267,14 @@ void setup() {
 
     // 1. 舵机（最先，安全位置）
     if (ENABLE_SERVO_180 && servo_180.attach(SERVO_180_PIN)) {
-        servo_180.set_angle(90);
+        servo_180.set_angle(70);
         update_boot_status(BOOT_SERVO180, true, "Servo180 OK", "Servo180 FAIL");
     } else { update_boot_status(BOOT_SERVO180, false, "Servo180 OK", ENABLE_SERVO_180 ? "Servo180 FAIL" : "Servo180 OFF"); }
 
-    if (ENABLE_SERVO_360 && servo_360.attach(SERVO_360_PIN)) {
-        servo_360.stop();
-        update_boot_status(BOOT_SERVO360, true, "Servo360 OK", "Servo360 FAIL");
-    } else { update_boot_status(BOOT_SERVO360, false, "Servo360 OK", ENABLE_SERVO_360 ? "Servo360 FAIL" : "Servo360 OFF"); }
+    if (ENABLE_SERVO_HEAD_PAN && servo_head_pan.attach(SERVO_HEAD_PAN_PIN)) {
+        servo_head_pan.set_angle(90);
+        update_boot_status(BOOT_SERVO_HEAD_PAN, true, "HeadPan OK", "HeadPan FAIL");
+    } else { update_boot_status(BOOT_SERVO_HEAD_PAN, false, "HeadPan OK", ENABLE_SERVO_HEAD_PAN ? "HeadPan FAIL" : "HeadPan OFF"); }
 
     // 2. 屏幕
     if (!screen_init()) {
@@ -1419,7 +1414,7 @@ void loop() {
         servo_180.attached() &&
         millis() - last_servo_idle > 3000) {
         last_servo_idle = millis();
-        idle_angle = 85 + random(0, 11);  // 85°~95° 微摆
+        idle_angle = 60 + random(0, 21);  // 60°~80° 微摆
         servo_180.set_angle(idle_angle);
     }
 

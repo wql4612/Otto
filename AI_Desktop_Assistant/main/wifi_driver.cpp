@@ -95,7 +95,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;color:#bdd0e5}.hint{font
 <button onclick="runCmd('audio_test_wake','唤醒提示音')">唤醒提示音</button>
 <button onclick="runCmd('rf_on','RF 开')">RF 开</button>
 <button onclick="runCmd('rf_off','RF 关')">RF 关</button>
-<button onclick="runCmd('servo180_90','舵机 90°')">舵机 90°</button>
+<button onclick="runCmd('servo180_90','舵机 80°')">舵机 80°</button>
 <button onclick="runCmd('face_idle','待机表情')">待机表情</button>
 </div>
 </div></div>
